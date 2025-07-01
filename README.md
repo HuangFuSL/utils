@@ -54,3 +54,37 @@ Utilities for Python projects
       WARNING and ERROR respectively.
     * Logger names are shown in cyan text.
     * Files, line numbers and function names are shown in magenta text.
+
+## `ctorch.py` - Torch utilities
+
+* **Class:** `Module`
+
+    A base class for PyTorch modules that provides a special property `device`.
+
+* **Function:** `pad_packed_sequence_right`
+
+    Like `torch.nn.utils.rnn.pad_packed_sequence` but right-aligns the sequences.
+
+* **Function:** `pack_padded_sequence_right`
+
+    Like `torch.nn.utils.rnn.pack_padded_sequence` but accepts right-aligned sequences.
+
+* **Function:** `unpad_sequence_right`
+
+    Like `torch.nn.utils.rnn.unpad_sequence` but accepts right-aligned sequences.
+
+* **Function:** `get_key_padding_mask_left`
+
+    Builds a key padding mask for left-aligned sequences.
+
+* **Function:** `get_key_padding_mask_right`
+
+    Builds a key padding mask for right-aligned sequences.
+
+* **Function:** `get_tensor_memory_size`
+
+    Returns the memory size of a tensor in bytes.
+
+* **Function:** `get_model_memory_size`
+
+    Returns the memory size of a PyTorch model in bytes.
