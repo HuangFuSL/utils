@@ -15,7 +15,7 @@ import logging
 import copy
 from typing import Any, Dict, List, Tuple
 
-from .cprint import cprefix, RESET
+from cprint import cprefix, RESET
 
 
 class BaseColoredFormatter(logging.Formatter):
@@ -24,9 +24,8 @@ class BaseColoredFormatter(logging.Formatter):
 
     This formatter allows customization of log message styles based on their
     logging level. It supports coloring the level name and optionally the
-    message itself. The styles can be customized through the `level_styles`
-    parameter, which should be a mapping of logging levels to style dictionaries.
-    The default styles are defined in `DEFAULT_STYLES`.
+    message itself. The styles can be customized through the `get_color` method,
+    which should return a argument dictionary compatible with `cprint.cprint`.
 
     Parameters:
     - fmt: The format string for the log messages.
