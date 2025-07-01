@@ -88,3 +88,23 @@ Utilities for Python projects
 * **Function:** `get_model_memory_size`
 
     Returns the memory size of a PyTorch model in bytes.
+
+## `cstats.py` - Statistics utilities in PyTorch
+
+* **Function:** `log_norm_pdf`
+
+    Computes the log probability density function of a multivariate normal distribution.
+
+    Parameters:
+    - `x`: Input tensor.
+    - `mean`: Mean vector.
+    - `Sigma`: Covariance matrix (can be a scalar, diagonal, or full matrix).
+    - `logSigma`: Logarithm of the covariance matrix (optional).
+    - `batch_first`: Whether the first dimension of `x` is the batch size.
+
+    Returns:
+    - Log probability density values for each input sample.
+
+* **Function:** `norm_pdf`
+
+    Same as `log_norm_pdf` but returns the probability density function values instead of log values.
