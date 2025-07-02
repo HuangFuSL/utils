@@ -2,7 +2,6 @@ import random
 import unittest
 
 import torch
-import tqdm
 
 import ctorch
 
@@ -28,7 +27,7 @@ class TestTorch(unittest.TestCase):
         self.assertEqual(module.device.type, 'cpu')
 
     def test_pad_packed_sequence_right(self):
-        for _ in tqdm.trange(16):
+        for _ in range(16):
             hidden_dim = random.randint(32, 256)
             num_sequences = random.randint(16, 128)
             lengths = torch.randint(32, 256, (num_sequences,), dtype=torch.long)
@@ -50,7 +49,7 @@ class TestTorch(unittest.TestCase):
                     self.assertTrue(torch.all(padded[i, :-lengths[i]] == 0))
 
     def test_pack_padded_sequence_right(self):
-        for _ in tqdm.trange(16):
+        for _ in range(16):
             hidden_dim = random.randint(32, 256)
             num_sequences = random.randint(16, 128)
             lengths = torch.randint(32, 256, (num_sequences,), dtype=torch.long)
@@ -72,7 +71,7 @@ class TestTorch(unittest.TestCase):
 
 
     def test_unpad_sequence_right(self):
-        for _ in tqdm.trange(16):
+        for _ in range(16):
             hidden_dim = random.randint(32, 256)
             num_sequences = random.randint(16, 128)
             lengths = torch.randint(32, 256, (num_sequences,), dtype=torch.long)
