@@ -128,3 +128,116 @@ git submodule update --remote --merge
 * **Function:** `norm_pdf`
 
     Same as `log_norm_pdf` but returns the probability density function values instead of log values.
+
+## `parser.py` - Automatic argument parser
+
+* **Decorator:** `auto_cli`
+
+    Automatically generates an argument parser for a dataclass with type hints.
+    Field types, including basic types, and `Optional` are automatically
+    recognized and converted corresponding argument types. Complex types like
+    lists and dictionaries can be input as strings in json format.
+
+    Apart from the fields of the dataclass, `auto_cli` also adds a `--config`
+    argument to the parser for loading configuration settings from a json, yaml,
+    or toml file. Values from the configuration file have a lower priority than
+    command line arguments.
+
+    The decorated function will get the following new class methods:
+
+    - `get_parser(prefix: str = '') -> argparse.ArgumentParser`:
+        Returns an `argparse.ArgumentParser` instance with arguments based on
+        the dataclass fields. The `prefix` argument is prepended to each
+        argument name. The parser returned does not include the `--config`
+        argument for loading configuration files.
+
+        Example:
+        ```python
+        @auto_cli
+        @dataclasses.dataclass
+        class YourClass:
+            name: str = 'DefaultName'
+            age: int = 25
+
+        parser = YourClass.get_parser()
+        parser_prefix = YourClass.get_parser(prefix='man')
+        ```
+
+        The generated `parser` will accept the following arguments:
+
+        * `--name`: The name argument with a default value of 'DefaultName'.
+        * `--age`: The age argument with a default value of 25.
+
+        The generated `parser_prefix` will accept the following arguments:
+
+        * `--man-name`: The name argument with a default value of 'DefaultName'.
+        * `--man-age`: The age argument with a default value of 25.
+
+    - `parse_namespace(ns: argparse.Namespace, kw: Dict[str, Any] = None, prefix: str = '') -> 'YourClass'`:
+        Parses an `argparse.Namespace` instance and a kwargs dictionary into an
+        instance of the dataclass. Prefix is prepended to each argument name.
+        The `kw` dictionary is loaded from a config file if specified in `ns`.
+        A `ValueError` is raised if a required argument is missing from both
+        `ns` and `kw`, and no default value is provided.
+    - `parse_args(argv: List[str] = None) -> 'YourClass'`:
+        Parses command line arguments and returns an instance of the dataclass.
+        If `argv` is `None`, it uses `sys.argv[1:]`. The method also handles
+        config files specified in the command line arguments.
+
+* **Function:** `get_all_parser(dataclass, **dataclasses) -> argparse.ArgumentParser`
+
+    Returns a combined `argparse.ArgumentParser` that merges the parsers of
+    multiple dataclasses into one, and then adds a `--config` argument for
+    loading configuration files.
+
+    The dataclass provided as a positional argument is treated as unprefixed,
+    while the others are prefixed with their keyword argument names.
+
+* **Function:** `parse_all_args() -> Dict[str, 'YourClass']`
+
+    The `parse_all_args` function accepts two types of input:
+
+    1. `parse_all_args(cli_args, dataclass, **dataclasses)`: where `cli_args` is
+    a list of command line arguments, `dataclass` is the unprefixed dataclass,
+    and `dataclasses` are additional prefixed dataclasses.
+    2. `parse_all_args(dataclass, **dataclasses)`: where `dataclass` is the
+    unprefixed dataclass and `dataclasses` are additional prefixed dataclasses.
+    `sys.argv[1:]` is used as the command line arguments.
+
+    The result is a dictionary where the keys are the prefixes of the
+    dataclasses and the values are instances of those dataclasses, parsed from
+    the command line arguments. The unprefixed dataclass is stored under the
+    key `''`.
+
+    Example:
+    ```python
+    @auto_cli
+    @dataclasses.dataclass
+    class ClassMain:
+        name: str = 'MainName'
+        age: int = 30
+
+    @auto_cli
+    @dataclasses.dataclass
+    class ClassAdditional:
+        address: str = 'DefaultAddress'
+        phone: str = '1234567890'
+
+    parser = get_all_parser(ClassMain, additional=ClassAdditional)
+    ```
+
+    The generated parser will accept the following arguments:
+
+    * `--name`: The name argument with a default value of 'MainName'.
+    * `--age`: The age argument with a default value of 30.
+    * `--additional-address`: The address argument with a default value of 'DefaultAddress'.
+    * `--additional-phone`: The phone argument with a default value of '1234567890'.
+
+    Or the following configuration files:
+
+    ```yaml
+    name: 'MainName'
+    age: 30
+    additional_address: 'DefaultAddress'
+    additional_phone: '1234567890'
+    ```

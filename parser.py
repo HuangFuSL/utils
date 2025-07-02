@@ -20,11 +20,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import enum
+import functools
 import json
 import os
 import sys
 import typing
-from typing import Any, Dict, Sequence, Type, TypeVar, Union, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Type, TypeVar, Union, overload
 
 T = TypeVar('T')
 
@@ -81,13 +82,166 @@ def _convert_value(raw: str, tp):
     return raw
 
 
-def auto_cli(cls: Type[T] | None = None, /, **decorator_kw):
+def _build_parser(*parsers: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    '''
+    Gather multiple argument parsers into a single one.
+    '''
+    parser = argparse.ArgumentParser(parents=parsers)
+    parser.add_argument(
+        '--config',
+        type=str, default='',
+        help='Path to the configuration file'
+    )
+    return parser
+
+def _handle_config_file(ns: argparse.Namespace) -> Dict[str, Any]:
+    if ns.config:
+        with open(ns.config, 'r') as f:
+            content = f.read()
+        suffix = os.path.splitext(ns.config)[1].lower()
+        if suffix in ('.json',):
+            config_data = json.loads(content)
+        elif suffix in ('.yaml', '.yml'):
+            if not YAML_AVAILABLE:
+                raise ImportError(
+                    'YAML support is not available. Install PyYAML to use YAML files.')
+            config_data = yaml.load(content, Loader=yaml.SafeLoader)
+        elif suffix in ('.toml',):
+            if not TOML_AVAILABLE:
+                raise ImportError(
+                    'TOML support is not available. Install tomllib to use TOML files.')
+            config_data = tomllib.loads(content)
+        else:
+            raise ValueError(
+                'Unsupported config file format. Use .json, .yaml, or .toml.')
+        if not isinstance(config_data, dict):
+            raise ValueError('Config file must contain a dictionary.')
+        # Override all all command line arguments with config file values
+        kw = config_data
+        return kw
+    return {}
+
+class _DECORATED(Generic[T]):
+    @classmethod
+    def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
+
+    @classmethod
+    def parse_namespace(
+        cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
+        prefix: str = ''
+    ) -> T: ...
+
+    @classmethod
+    def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
+
+
+@overload
+def auto_cli(
+    cls: Type[T], /, **decorator_kw: Any
+) -> Type[_DECORATED[T]]:
+    ...
+
+@overload
+def auto_cli(
+    cls: None = None, /, **decorator_kw: Any
+) -> Callable[[Type[T]], Type[_DECORATED[T]]]:
+    ...
+
+def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T]] | Callable[[Type[T]], Type[_DECORATED[T]]]:
     ''' Decorate and inject a `parse_args` method into a dataclass.'''
 
-    def wrap(datacls: Type[T]) -> Type[T]:
+    @functools.wraps(auto_cli)
+    def wrap(datacls: Type[T]) -> Type[_DECORATED[T]]:
         _type_hints: Dict[str, Any] = typing.get_type_hints(
             datacls, globalns=vars(sys.modules[datacls.__module__])
         )
+
+        @classmethod
+        def get_parser(cls_, prefix: str = '') -> argparse.ArgumentParser:
+            '''
+            Get the argument parser for this dataclass.
+            '''
+            parser = argparse.ArgumentParser(add_help=False)
+
+            for f in dataclasses.fields(cls_):
+                if prefix:
+                    name = f'{prefix}_{f.name}'
+                    argname = f'--{prefix}-{f.name}'
+                    no_argname = f'--no-{prefix}-{f.name}'
+                else:
+                    name = f.name
+                    argname = f'--{f.name}'
+                    no_argname = f'--no-{f.name}'
+                argtype = _infer_argtype(_type_hints[f.name])
+                if f.default is not dataclasses.MISSING:
+                    default = f.default
+                elif f.default_factory is not dataclasses.MISSING:
+                    default = f.default_factory()
+                else:
+                    default = None
+
+                help_text = f.metadata.get('help', '')
+
+                if argtype is bool:
+                    # bool ➜ --flag / --no-flag
+                    parser.add_argument(
+                        no_argname, dest=name, action='store_false', default=Const.MISSING_IN_CLI,
+                        help=help_text + ' (set to False)'
+                    )
+                    parser.add_argument(
+                        argname, dest=name, action='store_true',
+                        default=Const.MISSING_IN_CLI,
+                        help=help_text + ' (set to True)'
+                    )
+                else:
+                    parser.add_argument(
+                        argname,
+                        dest=name,
+                        type=argtype if argtype is not str else str,
+                        default=Const.MISSING_IN_CLI,
+                        help=help_text +
+                        (f' (default: {default})' if default is not None else '')
+                    )
+            return parser
+
+        @classmethod
+        def parse_namespace(
+            cls_, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
+            prefix: str = ''
+        ) -> T:
+            '''
+            Parse an argparse.Namespace into a dataclass instance.
+            '''
+            if kw is None:
+                kw = {}
+            new_kw = {} # Avoid modifying the original dict
+            for f in dataclasses.fields(cls_):
+                if prefix:
+                    name = f'{prefix}_{f.name}'
+                else:
+                    name = f.name
+                val = getattr(ns, name, Const.MISSING_IN_CLI)
+                if val is Const.MISSING_IN_CLI:
+                    if name in kw:
+                        val = kw[name]
+                    elif f.default is not dataclasses.MISSING:
+                        val = f.default
+                    elif f.default_factory is not dataclasses.MISSING:
+                        val = f.default_factory()
+                    else:
+                        raise ValueError(f'Missing required argument: {name}')
+                else:
+                    type_ = _type_hints[f.name]
+                    # JSON deserialization for complex types
+                    if isinstance(val, str) \
+                        and _infer_argtype(type_) is str \
+                        and typing.get_origin(_strip_optional(type_)) in (list, tuple, set, dict):
+                        val = _convert_value(val, type_)
+                new_kw[f.name] = val
+            return cls_(**new_kw)
+
+        datacls.get_parser = get_parser
+        datacls.parse_namespace = parse_namespace
 
         @classmethod
         def parse_args(cls_, argv: Sequence[str] | None = None) -> T:
@@ -100,84 +254,76 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw):
             - list/tuple/set/dict: Parse as JSON strings
             - Configuration file: --config <path>
             '''
-            parser = argparse.ArgumentParser(
-                description=decorator_kw.get('description', cls_.__name__)
-            )
-
-            for f in dataclasses.fields(cls_):
-                name = f'--{f.name}'
-                argtype = _infer_argtype(_type_hints[f.name])
-                default = f.default if f.default is not dataclasses.MISSING else None
-                help_text = f.metadata.get('help', '')
-
-                if argtype is bool:
-                    # bool ➜ --flag / --no-flag
-                    parser.add_argument(
-                        f'--no-{f.name}', dest=f.name, action='store_false',
-                        help=help_text + ' (set to False)'
-                    )
-                    parser.add_argument(
-                        name, dest=f.name, action='store_true',
-                        help=help_text + ' (set to True)'
-                    )
-                else:
-                    parser.add_argument(
-                        name,
-                        type=argtype if argtype is not str else str,
-                        default=Const.MISSING_IN_CLI,
-                        help=help_text +
-                        (f' (default: {default})' if default is not None else '')
-                    )
-            parser.add_argument(
-                '--config',
-                type=str, default='',
-                help='Path to the configuration file'
-            )
+            parser = _build_parser(cls_.get_parser())
 
             ns = parser.parse_args(argv)
-            kw = {}
-            # Handle config file
-            if ns.config:
-                with open(ns.config, 'r') as f:
-                    content = f.read()
-                suffix = os.path.splitext(ns.config)[1].lower()
-                if suffix in ('.json',):
-                    config_data = json.loads(content)
-                elif suffix in ('.yaml', '.yml'):
-                    if not YAML_AVAILABLE:
-                        raise ImportError('YAML support is not available. Install PyYAML to use YAML files.')
-                    config_data = yaml.load(content, Loader=yaml.SafeLoader)
-                elif suffix in ('.toml',):
-                    if not TOML_AVAILABLE:
-                        raise ImportError('TOML support is not available. Install tomllib to use TOML files.')
-                    config_data = tomllib.loads(content)
-                else:
-                    raise ValueError('Unsupported config file format. Use .json, .yaml, or .toml.')
-                if not isinstance(config_data, dict):
-                    raise ValueError('Config file must contain a dictionary.')
-                # Override all all command line arguments with config file values
-                kw = config_data
-            for f in dataclasses.fields(cls_):
-                val = getattr(ns, f.name)
-                if val is Const.MISSING_IN_CLI:
-                    if f.name in kw:
-                        continue
-                    if f.default is dataclasses.MISSING:
-                        raise ValueError(f'Missing required argument: {f.name}')
-                    val = f.default
-                else:
-                    type_ = _type_hints[f.name]
-                    # JSON deserialization for complex types
-                    if isinstance(val, str) \
-                        and _infer_argtype(type_) is str \
-                        and typing.get_origin(_strip_optional(type_)) in (list, tuple, set, dict):
-                        val = _convert_value(val, type_)
-                kw[f.name] = val
-            return cls_(**kw)
+            kw = _handle_config_file(ns)
+            for name in kw:
+                type_ = _type_hints.get(name, str)
+                if isinstance(kw[name], str) and _infer_argtype(type_) is str \
+                    and typing.get_origin(_strip_optional(type_)) in (list, tuple, set, dict):
+                    kw[name] = _convert_value(kw[name], type_)
+
+            return cls_.parse_namespace(ns, kw)
 
         datacls.parse_args = parse_args
+
+        if TYPE_CHECKING:
+            class _TYPE_HINTS(_DECORATED[datacls],datacls): ...
+            return _TYPE_HINTS
+
         return datacls
 
     return wrap if cls is None else wrap(cls)
 
-__all__ = ['auto_cli']
+def get_all_parser(
+    dataclass = None, **dataclasses
+):
+    dataclasses = dataclasses.copy()
+    if dataclass is not None:
+        dataclasses[''] = dataclass
+    parsers = []
+    for name, datacls in dataclasses.items():
+        parsers.append(
+            datacls.get_parser(prefix=name)
+        )
+    return _build_parser(*parsers)
+
+@overload
+def parse_all_args(
+    cli_args: List[str], dataclass: object | None = None, **dataclasses
+) -> Dict[str, Any]:
+    ...
+
+@overload
+def parse_all_args(
+    cli_args: object, dataclass: None = None, **dataclasses
+) -> Dict[str, Any]:
+    ...
+
+def parse_all_args(
+    cli_args: List[str] | object, dataclass: object | None = None, **dataclasses
+) -> Dict[str, Any]:
+    '''
+    Parse command line arguments into a dictionary of dataclass instances.
+    Each dataclass is identified by its name in the `dataclasses` argument.
+    '''
+    pass_down = None
+    if not isinstance(cli_args, list):
+        pass_down = None
+        dataclass = cli_args
+    else:
+        pass_down = cli_args
+
+    parser = get_all_parser(dataclass, **dataclasses)
+    ns = parser.parse_args(pass_down)
+    kw = _handle_config_file(ns)
+    result = {}
+    for name, datacls in dataclasses.items():
+        result[name] = datacls.parse_namespace(ns, kw, prefix=name)
+    if dataclass is not None:
+        result[''] = dataclass.parse_namespace(ns, kw, prefix='')
+    return result
+
+
+__all__ = ['auto_cli', 'parse_all_args', 'get_all_parser']
