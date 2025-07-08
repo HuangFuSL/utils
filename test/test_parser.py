@@ -212,6 +212,7 @@ class TestParser(unittest.TestCase):
 class TestConfig:
     name: str = 'DefaultName'
     age: int = 25
+    weight: float = 70.0
     active: bool = True
     tags: List[str] = dataclasses.field(default_factory=list)
     params: Dict[str, str] = dataclasses.field(default_factory=dict)
@@ -228,6 +229,7 @@ class TestJsonConfig(unittest.TestCase):
             f.write(json.dumps({
                 'name': 'Alice',
                 'age': 30,
+                'weight': 6.55e1,
                 'active': False,
                 'tags': ['tag1', 'tag2'],
                 'params': {'param1': 'value1', 'param2': 'value2'},
@@ -241,6 +243,7 @@ class TestJsonConfig(unittest.TestCase):
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'Alice')
             self.assertEqual(obj.age, 30)
+            self.assertEqual(obj.weight, 65.5)
             self.assertFalse(obj.active)
             self.assertEqual(obj.tags, ['tag1', 'tag2'])
             self.assertEqual(obj.params, {'param1': 'value1', 'param2': 'value2'})
@@ -266,6 +269,7 @@ class TestJsonConfig(unittest.TestCase):
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'DefaultName')
             self.assertEqual(obj.age, 25)
+            self.assertEqual(obj.weight, 70.0)
             self.assertTrue(obj.active)
             self.assertEqual(obj.tags, [])
             self.assertEqual(obj.params, {})
@@ -284,6 +288,7 @@ class TestYamlConfig(unittest.TestCase):
             f.write("""
 name: Alice
 age: 30
+weight: 6.55e1
 active: false
 tags:
     - tag1
@@ -301,6 +306,7 @@ params_str: '{"param3": "value3", "param4": "value4"}'
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'Alice')
             self.assertEqual(obj.age, 30)
+            self.assertEqual(obj.weight, 65.5)
             self.assertFalse(obj.active)
             self.assertEqual(obj.tags, ['tag1', 'tag2'])
             self.assertEqual(obj.params, {'param1': 'value1', 'param2': 'value2'})
@@ -328,6 +334,7 @@ params_str: '{"param3": "value3", "param4": "value4"}'
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'DefaultName')
             self.assertEqual(obj.age, 25)
+            self.assertEqual(obj.weight, 70.0)
             self.assertTrue(obj.active)
             self.assertEqual(obj.tags, [])
             self.assertEqual(obj.params, {})
@@ -346,6 +353,7 @@ class TestTomlConfig(unittest.TestCase):
             f.write(b"""
 name = "Alice"
 age = 30
+weight = 6.55e1
 active = false
 tags = ["tag1", "tag2"]
 params = { param1 = "value1", param2 = "value2" }
@@ -359,6 +367,7 @@ params_str = '{"param3": "value3", "param4": "value4"}'
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'Alice')
             self.assertEqual(obj.age, 30)
+            self.assertEqual(obj.weight, 65.5)
             self.assertFalse(obj.active)
             self.assertEqual(obj.tags, ['tag1', 'tag2'])
             self.assertEqual(obj.params, {'param1': 'value1', 'param2': 'value2'})
@@ -386,6 +395,7 @@ params_str = '{"param3": "value3", "param4": "value4"}'
             obj = self.cls.parse_args(['--config', config_path])
             self.assertEqual(obj.name, 'DefaultName')
             self.assertEqual(obj.age, 25)
+            self.assertEqual(obj.weight, 70.0)
             self.assertTrue(obj.active)
             self.assertEqual(obj.tags, [])
             self.assertEqual(obj.params, {})

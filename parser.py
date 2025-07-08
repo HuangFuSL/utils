@@ -25,9 +25,9 @@ import json
 import os
 import sys
 import typing
-from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Type, TypeVar, Union, overload
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol, Sequence, Type, TypeVar, Union, cast, overload, runtime_checkable
 
-T = TypeVar('T')
+T = TypeVar('T', covariant=True)
 
 try:
     import yaml
@@ -121,18 +121,34 @@ def _handle_config_file(ns: argparse.Namespace) -> Dict[str, Any]:
         return kw
     return {}
 
-class _DECORATED(Generic[T]):
-    @classmethod
-    def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
+if TYPE_CHECKING:
+    @runtime_checkable
+    class _DECORATED(Any, Protocol[T]):
+        @classmethod
+        def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
 
-    @classmethod
-    def parse_namespace(
-        cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
-        prefix: str = ''
-    ) -> T: ...
+        @classmethod
+        def parse_namespace(
+            cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
+            prefix: str = ''
+        ) -> T: ...
 
-    @classmethod
-    def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
+        @classmethod
+        def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
+else:
+    @runtime_checkable
+    class _DECORATED(Protocol[T]):
+        @classmethod
+        def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
+
+        @classmethod
+        def parse_namespace(
+            cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
+            prefix: str = ''
+        ) -> T: ...
+
+        @classmethod
+        def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
 
 
 @overload
@@ -214,7 +230,7 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
             '''
             if kw is None:
                 kw = {}
-            new_kw = {} # Avoid modifying the original dict
+            new_kw = {}  # Avoid modifying the original dict
             for f in dataclasses.fields(cls_):
                 if prefix:
                     name = f'{prefix}_{f.name}'
@@ -230,13 +246,10 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
                         val = f.default_factory()
                     else:
                         raise ValueError(f'Missing required argument: {name}')
-                else:
-                    type_ = _type_hints[f.name]
-                    # JSON deserialization for complex types
-                    if isinstance(val, str) \
-                        and _infer_argtype(type_) is str \
-                        and typing.get_origin(_strip_optional(type_)) in (list, tuple, set, dict):
-                        val = _convert_value(val, type_)
+                type_ = _type_hints[f.name]
+                # JSON deserialization for complex types
+                if isinstance(val, str):
+                    val = _convert_value(val, type_)
                 new_kw[f.name] = val
             return cls_(**new_kw)
 
@@ -260,8 +273,7 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
             kw = _handle_config_file(ns)
             for name in kw:
                 type_ = _type_hints.get(name, str)
-                if isinstance(kw[name], str) and _infer_argtype(type_) is str \
-                    and typing.get_origin(_strip_optional(type_)) in (list, tuple, set, dict):
+                if isinstance(kw[name], str):
                     kw[name] = _convert_value(kw[name], type_)
 
             return cls_.parse_namespace(ns, kw)
@@ -289,31 +301,21 @@ def get_all_parser(
         )
     return _build_parser(*parsers)
 
-@overload
 def parse_all_args(
-    cli_args: List[str], dataclass: object | None = None, **dataclasses
-) -> Dict[str, Any]:
-    ...
-
-@overload
-def parse_all_args(
-    cli_args: object, dataclass: None = None, **dataclasses
-) -> Dict[str, Any]:
-    ...
-
-def parse_all_args(
-    cli_args: List[str] | object, dataclass: object | None = None, **dataclasses
+    cli_args: List[str] | Any | None = None, dataclass: Any | None = None, **dataclasses: Any
 ) -> Dict[str, Any]:
     '''
     Parse command line arguments into a dictionary of dataclass instances.
     Each dataclass is identified by its name in the `dataclasses` argument.
     '''
     pass_down = None
-    if not isinstance(cli_args, list):
+    if isinstance(cli_args, list) or cli_args is None:
+        if cli_args is None:
+            cli_args = sys.argv[1:]
+        pass_down = cli_args
+    else:
         pass_down = None
         dataclass = cli_args
-    else:
-        pass_down = cli_args
 
     parser = get_all_parser(dataclass, **dataclasses)
     ns = parser.parse_args(pass_down)
