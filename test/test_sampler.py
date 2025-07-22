@@ -1,10 +1,17 @@
 import collections
 import itertools
+import os
 import time
 import unittest
 
 import numpy as np
 from scipy import stats
+
+# Remove existing pre-built libraries if they exist
+for _ in os.listdir(os.path.join(os.path.dirname(__file__), '../sampler')):
+    for ext in ['.so', '.pyd', '.dll', '.dylib']:
+        if _.endswith(ext):
+            os.remove(os.path.join(os.path.dirname(__file__), '../sampler', _))
 
 from sampler import *
 
