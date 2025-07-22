@@ -1,10 +1,11 @@
 '''
-cstats.py
+functional.py
 
 Author: HuangFuSL
 Date: 2025-06-30
 
-This module provides functions related to distribution calculations in PyTorch.
+This module provides functional utilities for PyTorch tensors. Part of the file
+is merged from cstats.py.
 '''
 
 import torch

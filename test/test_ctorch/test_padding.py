@@ -1,31 +1,12 @@
+
 import random
 import unittest
 
 import torch
+from ctorch.padding import pad_packed_sequence_right, pack_padded_sequence_right, unpad_sequence_right
 
-import ctorch
 
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-elif torch.backends.mps.is_available():
-    device = torch.device('mps')
-else:
-    device = torch.device('cpu')
-
-class TestTorch(unittest.TestCase):
-    def test_Module(self):
-        class _module(ctorch.Module):
-            def __init__(self):
-                super().__init__()
-
-        module = _module()
-        self.assertIsInstance(module, ctorch.Module)
-        self.assertEqual(module.device.type, 'cpu')
-        module.to(device)
-        self.assertEqual(module.device.type, device.type)
-        module.to('cpu')
-        self.assertEqual(module.device.type, 'cpu')
-
+class TestPadding(unittest.TestCase):
     def test_pad_packed_sequence_right(self):
         for _ in range(16):
             hidden_dim = random.randint(32, 256)
@@ -37,7 +18,7 @@ class TestTorch(unittest.TestCase):
                 sequences.append(torch.randn(length, hidden_dim))
             packed = torch.nn.utils.rnn.pack_sequence(sequences)
             with self.subTest(hidden_dim=hidden_dim, num_sequences=num_sequences):
-                padded, _length = ctorch.pad_packed_sequence_right(packed, batch_first=True)
+                padded, _length = pad_packed_sequence_right(packed, batch_first=True)
                 # Check length
                 self.assertEqual(_length.shape, (num_sequences,))
                 self.assertTrue(torch.all(_length == lengths))
@@ -59,10 +40,10 @@ class TestTorch(unittest.TestCase):
                 sequences.append(torch.randn(length, hidden_dim))
             packed = torch.nn.utils.rnn.pack_sequence(sequences)
             with self.subTest(hidden_dim=hidden_dim, num_sequences=num_sequences):
-                padded, _length = ctorch.pad_packed_sequence_right(
+                padded, _length = pad_packed_sequence_right(
                     packed, batch_first=True
                 )
-                re_packed = ctorch.pack_padded_sequence_right(
+                re_packed = pack_padded_sequence_right(
                     padded, _length, batch_first=True
                 )
                 unpacked = torch.nn.utils.rnn.unpack_sequence(re_packed)
@@ -83,6 +64,6 @@ class TestTorch(unittest.TestCase):
                 sequences, batch_first=True, padding_side='left'
             )
             with self.subTest(hidden_dim=hidden_dim, num_sequences=num_sequences):
-                unpadded = ctorch.unpad_sequence_right(padded, lengths, batch_first=True)
+                unpadded = unpad_sequence_right(padded, lengths, batch_first=True)
                 for old, new in zip(sequences, unpadded):
                     self.assertTrue(torch.allclose(old, new))

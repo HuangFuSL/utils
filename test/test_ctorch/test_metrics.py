@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from sklearn import metrics as sk_metrics
 
-import metrics
+from ctorch import metrics
 
 if torch.cuda.is_available():
     device = torch.device('cuda')

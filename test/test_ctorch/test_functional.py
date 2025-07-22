@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from cstats import log_norm_pdf
+from ctorch.functional import log_norm_pdf
 
 SCIPY_AVAILABLE = importlib.util.find_spec("scipy") is not None and \
     importlib.util.find_spec("numpy") is not None
