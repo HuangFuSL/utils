@@ -7,6 +7,7 @@ Originally in ctorch.py
 
 import torch
 
+from . import functional as local_F
 
 class Module(torch.nn.Module):
     def __init__(self, *args, **kwargs):
@@ -20,6 +21,19 @@ class Module(torch.nn.Module):
         '''
         return self._device_tracker.device
 
+
+class GradientReversalLayer(Module):
+    def __init__(self, alpha: float = 1.0):
+        super().__init__()
+        self.alpha = alpha
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the gradient reversal layer.
+        '''
+        if not isinstance(x, torch.Tensor):
+            raise TypeError('Input must be a torch.Tensor.')
+        return local_F.gradient_reversal(x, self.alpha)
 
 class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     def get_attention_map(

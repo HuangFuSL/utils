@@ -11,6 +11,8 @@ is merged from cstats.py.
 import torch
 import torch.linalg
 
+from . import ops
+
 def log_norm_pdf(
     x: torch.Tensor, mean: torch.Tensor, Sigma: torch.Tensor | None = None,
     logSigma: torch.Tensor | None = None, batch_first: bool | None = None
@@ -165,3 +167,9 @@ def norm_pdf(
     - Tensor containing the PDF values.
     """
     return torch.exp(log_norm_pdf(x, mean, Sigma, logSigma))
+
+def gradient_reversal(
+    x: torch.Tensor, alpha: float = 1.0
+) -> torch.Tensor:
+    return ops.GradientReversalOp.apply(x, alpha)
+
