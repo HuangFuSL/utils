@@ -118,6 +118,55 @@ def ndcg_score(y_true: torch.Tensor, y_score: torch.Tensor, k: int | None = None
     actual_dcg = _dcg(y_true, y_score, k)
     return actual_dcg / ideal_dcg
 
+def auuc_score(
+    y: torch.Tensor, t: torch.Tensor, tau: torch.Tensor,
+    qini: bool = True, normalize: bool = True
+) -> float:
+    '''
+    Compute the Area Under the Uplift Curve (AUUC).
+
+    Args:
+        y (torch.Tensor): Binary outcome (0 or 1).
+        t (torch.Tensor): Binary treatment assignment (0 or 1).
+        tau (torch.Tensor): Uplift scores.
+        qini (bool): If True, compute Qini instead of AUUC (subtracts the random baseline).
+
+    Returns:
+        float: The computed AUUC value.
+    '''
+    if y.dim() != 1 or t.dim() != 1 or tau.dim() != 1:
+        raise ValueError("y, t, and uplift must be 1-dimensional tensors.")
+    if y.shape != t.shape or y.shape != tau.shape:
+        raise ValueError("y, t, and uplift must have the same shape.")
+    if not torch.all((t == 0) | (t == 1)):
+        raise ValueError("t must be a binary tensor (0 or 1).")
+    if not torch.all((y == 0) | (y == 1)):
+        raise ValueError("y must be a binary tensor (0 or 1).")
+    if not torch.any(t) or not torch.any(1 - t):
+        raise ValueError("t must have at least one positive and one negative sample.")
+
+    N, = y.shape
+    n_t = t.sum()
+    n_c = N - n_t
+
+    uplift_desc_idx = torch.argsort(tau, descending=True)
+
+    y_sorted = y[uplift_desc_idx]
+    t_sorted = t[uplift_desc_idx]
+
+    cumsum_y_t = (y_sorted * t_sorted).cumsum(0) / n_t
+    cumsum_y_c = (y_sorted * (1 - t_sorted)).cumsum(0) / n_c
+
+    v_k = cumsum_y_t - cumsum_y_c
+    if normalize:
+        v_k /= v_k[-1].clone()  # Normalize ATE range
+    if qini:
+        # Random baseline is linear
+        v_k -= v_k[-1] * torch.arange(1, N + 1, device=y.device) / N
+
+    auuc = v_k.mean().item()
+    return auuc
+
 
 class BatchedMetric(abc.ABC):
     def __init__(self, **kwargs):
