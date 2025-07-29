@@ -7,6 +7,7 @@ Date: 2025-06-30
 This module provides functional utilities for PyTorch tensors. Part of the file
 is merged from cstats.py.
 '''
+import math
 
 import torch
 import torch.linalg
@@ -173,3 +174,134 @@ def gradient_reversal(
 ) -> torch.Tensor:
     return ops.GradientReversalOp.apply(x, alpha)
 
+def rbf_kernel(
+    x: torch.Tensor, y: torch.Tensor | None = None, *,
+    sigma: torch.Tensor | int | float | None = None,
+    gamma: torch.Tensor | int | float | None = None,
+    reduce: torch.Tensor | bool = False
+):
+    '''
+    Compute the Radial Basis Function (RBF) kernel between two sets of tensors.
+
+    Parameters:
+    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+    - sigma: Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+    - gamma: 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+    - reduce:
+        - If True, returns the mean of RBF kernel values under different bandwidths.
+        - If False, returns the RBF kernel values for each bandwidth.
+        - If a tensor, it should have shape (K,) and will be used as mean weight.
+
+    Returns:
+    - Tensor containing the RBF kernel values, shape (N, M) or (K, N, M) if multiple kernels are used.
+    '''
+    # Sanity checks
+    if sigma is not None and gamma is not None:
+        raise ValueError('Only one of sigma or gamma should be provided.')
+    if sigma is None and gamma is None:
+        raise ValueError('Either sigma or gamma must be provided.')
+    if gamma is None:
+        assert sigma is not None
+        gamma = 1 / (2 * sigma ** 2)
+    if not torch.is_tensor(gamma):
+        gamma = torch.tensor(gamma, dtype=x.dtype, device=x.device)
+    if y is None:
+        y = x
+
+    # Shape checks
+    if x.shape[1] != y.shape[1]:
+        raise ValueError(f'Input tensors must have the same number of features, but got {x.shape[1]} and {y.shape[1]}.')
+    M, D = x.shape
+    N, _ = y.shape
+
+    squeeze = gamma.dim() == 0
+    if squeeze:
+        gamma = gamma.unsqueeze(0)  # Scalar gamma -> (1,)
+    K, = gamma.shape
+
+    # Build the squared distance matrix
+    x, y = x.unsqueeze(0), y.unsqueeze(0) # (1, M, D), (1, N, D)
+    norm_dist = (torch.cdist(x, y, p=2) ** 2).squeeze(0)  # (M, N)
+    result = torch.exp(-torch.einsum('mn,k->kmn', norm_dist, gamma))
+
+    # Reduce the result
+    if reduce is True:
+        return result.mean(dim=0)
+    elif reduce is False:
+        if squeeze:
+            return result.squeeze(0)  # (M, N)
+        return result
+    elif isinstance(reduce, torch.Tensor):
+        if reduce.shape != (K,):
+            raise ValueError(f'Reduce tensor must have shape (K,), but got {reduce.shape}.')
+        return torch.einsum('kmn,k->mn', result, reduce)
+    raise ValueError(f'Reduce must be a boolean or a tensor, but got {type(reduce)}.')
+
+def mmd_distance(
+    x: torch.Tensor, y: torch.Tensor, *,
+    sigma: torch.Tensor | int | float | None = None,
+    gamma: torch.Tensor | int | float | None = None,
+    reduce: bool | torch.Tensor = False
+) -> torch.Tensor:
+    """
+    Compute the Maximum Mean Discrepancy (MMD) distance between two sets of tensors.
+
+    Parameters:
+    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+    - sigma: Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+    - gamma: 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+    - reduce:
+        - If True, returns the mean MMD distance under different bandwidths.
+        - If False, returns the MMD distance for each bandwidth.
+        - If a tensor, it should have shape (K,) and will be used as mean weight.
+
+    Returns:
+    - Tensor containing the MMD distance values, shape (K,) if reduce is False, or a scalar otherwise,
+    """
+    rbf_xx = rbf_kernel(x, x, sigma=sigma, gamma=gamma, reduce=reduce).mean(dim=(0, 1))
+    rbf_yy = rbf_kernel(y, y, sigma=sigma, gamma=gamma, reduce=reduce).mean(dim=(0, 1))
+    rbf_xy = rbf_kernel(x, y, sigma=sigma, gamma=gamma, reduce=reduce).mean(dim=(0, 1))
+
+    return rbf_xx - 2 * rbf_xy + rbf_yy
+
+def wasserstein_distance(
+    x: torch.Tensor, y: torch.Tensor, p: float = 2.0, eps: float = 1e-6,
+    wasser_iters: int = 20, wasser_eps: float = 1e-3
+) -> torch.Tensor:
+    """
+    Compute the Wasserstein distance between two sets of tensors using the Sinkhorn algorithm.
+
+    Parameters:
+    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+    - p: Order of the norm to use for the distance calculation.
+    - eps: Small value to avoid division by zero.
+    - wasser_iters: Number of iterations for the Sinkhorn algorithm.
+    - wasser_eps: Epsilon value for the Sinkhorn algorithm.
+
+    Returns:
+    - Tensor containing the Wasserstein distance value.
+    """
+    # Sanity checks
+    if p <= 0:
+        raise ValueError('p must be greater than 0.')
+    if x.shape[1] != y.shape[1]:
+        raise ValueError(f'Input tensors must have the same number of features, but got {x.shape[1]} and {y.shape[1]}.')
+    M, D = x.shape
+    N, _ = y.shape
+
+
+    cost = torch.cdist(x, y, p=p).pow(p)  # (M, N)
+    cost = cost / cost.max().clamp(min=eps)  # Normalize cost
+    log_K = -cost / wasser_eps
+    log_u, log_v = torch.zeros(M, device=x.device), torch.zeros(N, device=y.device)
+    log_a, log_b = log_u - math.log(M), log_v - math.log(N)
+
+    # Sinkhorn iteration
+    for _ in range(wasser_iters):
+        log_u = log_a - torch.logsumexp(log_K + log_v.unsqueeze(0), dim=1)
+        log_v = log_b - torch.logsumexp(log_K + log_u.unsqueeze(1), dim=0)
+    log_pi = log_K + log_u.unsqueeze(1) + log_v.unsqueeze(0)
+    return (torch.exp(log_pi) * cost).sum().pow(1 / p)

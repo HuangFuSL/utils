@@ -1,9 +1,10 @@
 import importlib.util
 import unittest
 
+import sklearn.metrics
 import torch
 
-from ctorch.functional import log_norm_pdf
+from ctorch.functional import log_norm_pdf, rbf_kernel, mmd_distance, wasserstein_distance
 
 SCIPY_AVAILABLE = importlib.util.find_spec("scipy") is not None and \
     importlib.util.find_spec("numpy") is not None
@@ -165,3 +166,47 @@ class TestLogNormPdfValues(unittest.TestCase):
             for i in range(self.N)
         ])
         self.assertTrue(np.allclose(torch_out.numpy(), ref, rtol=1e-6, atol=1e-6))
+
+class TestIPMDistance(unittest.TestCase):
+    def setUp(self):
+        self.M = 1000
+        self.x = torch.randn(self.M, 10)
+        self.y = torch.randn(self.M, 10) # Same distribution, same shape
+        self.z = torch.rand(self.M, 10) # Different distribution, same shape
+        self.w = torch.randn(self.M - 1, 10) # Same shape, different shape
+
+    def test_rbf_kernel_shape(self):
+        kernel = rbf_kernel(self.x, self.y, sigma=1.0)
+        self.assertEqual(kernel.shape, (self.M, self.M))
+
+    def test_rbf_kernel_values(self):
+        length_scale = 1.0
+        expected = torch.tensor(sklearn.metrics.pairwise.rbf_kernel(
+            self.x.numpy(), self.y.numpy(), gamma=1.0 / (2 * length_scale ** 2)
+        ))
+        kernel = rbf_kernel(self.x, self.y, sigma=length_scale)
+        self.assertTrue(torch.allclose(kernel, expected))
+
+    def test_mmd_distance(self):
+        distance_xx = mmd_distance(self.x, self.x, sigma=1.0).item()
+        distance_xy = mmd_distance(self.x, self.y, sigma=1.0).item()
+        distance_yx = mmd_distance(self.y, self.x, sigma=1.0).item()
+        distance_xz = mmd_distance(self.x, self.z, sigma=1.0).item()
+        distance_xw = mmd_distance(self.x, self.w, sigma=1.0).item()
+        self.assertLess(distance_xx, 1e-3)
+        self.assertGreaterEqual(distance_xy, 0)
+        self.assertAlmostEqual(distance_xy, distance_yx, places=3)
+        self.assertAlmostEqual(distance_xy, distance_xw, places=1)
+        self.assertGreater(distance_xz, distance_xy)
+
+    def test_wasserstein_distance(self):
+        distance_xx = wasserstein_distance(self.x, self.x).item()
+        distance_xy = wasserstein_distance(self.x, self.y).item()
+        distance_yx = wasserstein_distance(self.y, self.x).item()
+        distance_xz = wasserstein_distance(self.x, self.z).item()
+        distance_xw = wasserstein_distance(self.x, self.w).item()
+        self.assertLess(distance_xx, 1e-3)
+        self.assertGreaterEqual(distance_xy, 0)
+        self.assertAlmostEqual(distance_xy, distance_yx, 3)
+        self.assertAlmostEqual(distance_xw, distance_xy, 1)
+        self.assertGreater(distance_xz, distance_xy)
