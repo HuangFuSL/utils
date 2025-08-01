@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from ctorch.nn import Module, GradientReversalLayer
+from ctorch.nn import Module, GradientReversalLayer, Activation
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -36,3 +36,16 @@ class TestGradientReversalLayer(unittest.TestCase):
         self.assertTrue(x.grad is not None)
         assert x.grad is not None
         self.assertTrue(torch.allclose(x.grad, -torch.ones_like(x.grad)))
+
+
+class TestActivation(unittest.TestCase):
+    def setUp(self):
+        self.x = torch.randn(1000, 10)
+
+    def test_relu(self):
+        activation = Activation('relu')
+        self.assertTrue(torch.allclose(activation(self.x), torch.relu(self.x)))
+
+    def test_softmax(self):
+        activation = Activation('softmax', dim=1)
+        self.assertTrue(torch.allclose(activation(self.x), torch.softmax(self.x, dim=1)))

@@ -21,6 +21,34 @@ class Module(torch.nn.Module):
         '''
         return self._device_tracker.device
 
+class Activation(Module):
+    ''' Arbitrary activation function module. '''
+    def __init__(self, name: str, *args, **kwargs):
+        super().__init__()
+        activation = {
+            'relu': torch.nn.ReLU,
+            'sigmoid': torch.nn.Sigmoid,
+            'tanh': torch.nn.Tanh,
+            'softmax': torch.nn.Softmax,
+            'softplus': torch.nn.Softplus,
+            'leaky_relu': torch.nn.LeakyReLU,
+            'leakyrelu': torch.nn.LeakyReLU,
+            'elu': torch.nn.ELU,
+            'selu': torch.nn.SELU,
+            'gelu': torch.nn.GELU,
+            'swish': torch.nn.SiLU,
+            'mish': torch.nn.Mish
+        }.get(name.lower(), None)
+        if activation is None:
+            raise ValueError(f'Unknown activation function: {name}')
+        self.activation = activation(*args, **kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the activation function.
+        '''
+        return self.activation(x)
+
 
 class GradientReversalLayer(Module):
     def __init__(self, alpha: float = 1.0):
