@@ -3,7 +3,7 @@ import random
 import unittest
 
 import torch
-from ctorch.padding import pad_packed_sequence_right, pack_padded_sequence_right, unpad_sequence_right
+from ctorch.padding import *
 
 
 class TestPadding(unittest.TestCase):
@@ -67,3 +67,48 @@ class TestPadding(unittest.TestCase):
                 unpadded = unpad_sequence_right(padded, lengths, batch_first=True)
                 for old, new in zip(sequences, unpadded):
                     self.assertTrue(torch.allclose(old, new))
+
+class TestPackedOps(unittest.TestCase):
+    def setUp(self):
+        self.B = 64
+        self.D = 32
+        self.max_len = 128
+        lengths = torch.randint(1, self.max_len + 1, (self.B,), dtype=torch.long)
+        self.packed_a = torch.nn.utils.rnn.pack_padded_sequence(
+            torch.randn(self.B, self.max_len, self.D),
+            lengths=lengths,
+            batch_first=True, enforce_sorted=False
+        )
+        self.packed_b = torch.nn.utils.rnn.pack_padded_sequence(
+            torch.randn(self.B, self.max_len, self.D),
+            lengths=lengths,
+            batch_first=True, enforce_sorted=False
+        )
+        self.mask = get_key_padding_mask_left(lengths)
+        self.padded_a, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            self.packed_a, batch_first=True, padding_value=0.0
+        )
+        self.padded_b, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            self.packed_b, batch_first=True, padding_value=0.0
+        )
+
+    def test_packed_unary(self):
+        apply_then_pad, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            packed_unary_op(torch.sigmoid, self.packed_a), batch_first=True
+        )
+        pad_then_apply = torch.sigmoid(self.padded_a)
+        self.assertTrue(torch.allclose(apply_then_pad[self.mask], pad_then_apply[self.mask]))
+
+    def test_packed_binary(self):
+        apply_then_pad, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            packed_binary_op(torch.add, self.packed_a, self.packed_b), batch_first=True
+        )
+        pad_then_apply = self.padded_a + self.padded_b
+        self.assertTrue(torch.allclose(apply_then_pad[self.mask], pad_then_apply[self.mask]))
+
+    def test_packed_concat(self):
+        apply_then_pad, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            packed_concat([self.packed_a, self.packed_b]), batch_first=True
+        )
+        pad_then_apply = torch.cat((self.padded_a, self.padded_b), dim=-1)
+        self.assertTrue(torch.allclose(apply_then_pad, pad_then_apply))

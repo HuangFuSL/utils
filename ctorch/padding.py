@@ -1,14 +1,154 @@
 '''
-padding.py - Padding utilities for PyTorch tensors
+padding.py - Utilities for handling PackedSequences
 
 Originally in ctorch.py
 Author: HuangFuSL
 Date: 2025-06-26
 '''
 
-from typing import List
+from typing import Callable, List, TypeVar
 
 import torch
+
+PackedSequence = torch.nn.utils.rnn.PackedSequence
+PackedOrTensor = TypeVar('PackedOrTensor', torch.Tensor, PackedSequence)
+
+
+def packed_unary_op(
+    func: Callable[[torch.Tensor], torch.Tensor], x: PackedOrTensor
+) -> PackedOrTensor:
+    '''
+    Apply an unary element-wise function to a PackedSequence or a regular tensor.
+
+    Args:
+        func (Callable): An element-wise function to apply.
+        x (PackedSequence | torch.Tensor): The input data, either a PackedSequence or a regular tensor.
+
+    Returns:
+        y (PackedSequence | torch.Tensor): The output after applying the function. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
+    '''
+    if isinstance(x, torch.Tensor):
+        return func(x)
+
+    ret = func(x.data)
+    if ret.shape != x.data.shape:
+        raise ValueError(
+            f"Function {func.__name__} changed the shape of the data from {x.data.shape} to {ret.shape}."
+        )
+    y = x._replace(data=ret)
+
+    return y
+
+def packed_binary_op(
+    op: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    a: PackedOrTensor,
+    b: PackedOrTensor,
+) -> PackedOrTensor:
+    '''
+    Apply a binary element-wise operation to a PackedSequence or a regular tensor.
+
+    Args:
+        op (Callable): A binary operation to apply.
+        a (PackedSequence | torch.Tensor): The first input data, either a PackedSequence or a regular tensor.
+        b (PackedSequence | torch.Tensor): The second input data, either a PackedSequence or a regular tensor.
+
+    Returns:
+        out (PackedSequence | torch.Tensor): The output after applying the operation.
+    '''
+    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        return op(a, b)
+    if isinstance(a, PackedSequence) and isinstance(b, PackedSequence):
+        for fieldname in ['batch_sizes', 'sorted_indices', 'unsorted_indices']:
+            if not (getattr(a, fieldname) is not None and getattr(b, fieldname) is not None) \
+                or (not torch.equal(getattr(a, fieldname), getattr(b, fieldname))):
+                    raise ValueError(
+                        f"PackedSequences must have identical {fieldname}."
+                    )
+
+        if a.data.shape != b.data.shape:
+            raise ValueError(
+                f"PackedSequences must have identical data shapes: {a.data.shape} vs {b.data.shape}."
+            )
+        ret = op(a.data, b.data)
+        if ret.shape != a.data.shape:
+            raise ValueError(
+                f"Operation {op.__name__} changed the shape of the data from {a.data.shape} to {ret.shape}."
+            )
+        return a._replace(data=ret)
+    else:
+        raise TypeError(
+            'Both inputs must be either PackedSequence or torch.Tensor, but got '
+            f'{type(a)} and {type(b)}.'
+        )
+
+
+def packed_forward(
+    module: torch.nn.Module, packed_input: PackedOrTensor
+) -> PackedOrTensor:
+    '''
+    Forward pass for a module with packed input.
+
+    Args:
+        module (torch.nn.Module): The neural network to apply.
+        packed_input (PackedSequence | torch.Tensor): The packed input data.
+
+    Returns:
+        out (PackedSequence | torch.Tensor): The output after applying the module. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
+    '''
+    return packed_unary_op(module.forward, packed_input)
+
+def packed_concat(
+    packed_seq: List[PackedSequence], dim: int = -1
+):
+    '''
+    Concatenate a list of PackedSequence objects along a specified dimension. Notice that the length of the packed sequences must be the same.
+
+    Args:
+        packed_seq (List[PackedSequence]): List of PackedSequence objects to concatenate.
+        dim (int): Dimension along which to concatenate. Default is -1 (last dimension). The dimension must not be 0 (the packed time dimension). The sequence length dimension (dimension 1 of the padded tensor where batch_size is True) is omitted.
+
+    Returns:
+        out (PackedSequence): A new PackedSequence object containing the concatenated data.
+    '''
+    if not packed_seq:
+        raise ValueError('packed_seq must not be empty.')
+
+    # Reference metadata from the first sequence
+    ref = packed_seq[0]
+    batch_sizes = ref.batch_sizes
+    sorted_indices = ref.sorted_indices
+    unsorted_indices = ref.unsorted_indices
+
+    # Normalise dim (allow negative values)
+    data_dim = ref.data.dim()
+    if dim < 0:
+        dim += data_dim
+    if dim == 0:
+        raise ValueError("Concatenation along dim=0 (packed time dimension) is invalid.")
+    if not (0 < dim and dim < data_dim):
+        raise IndexError(f"dim must be in range [-{data_dim}, {data_dim-1}]")
+
+    # Sanity checks: all meta data must match
+    for p in packed_seq[1:]:
+        if not torch.equal(p.batch_sizes, batch_sizes):
+            raise ValueError("All PackedSequence objects must have identical batch_sizes.")
+        if (sorted_indices is None) ^ (p.sorted_indices is None) or \
+           (sorted_indices is not None and not torch.equal(p.sorted_indices, sorted_indices)):
+            raise ValueError("All packed sequences must share the same sorted_indices.")
+        if (unsorted_indices is None) ^ (p.unsorted_indices is None) or \
+           (unsorted_indices is not None and not torch.equal(p.unsorted_indices, unsorted_indices)):
+            raise ValueError("All packed sequences must share the same unsorted_indices.")
+
+    # Actual concatenation of data tensors
+    data_cat = torch.cat([p.data for p in packed_seq], dim=dim)
+
+    # Return a new PackedSequence with the shared metadata
+    return PackedSequence(
+        data_cat,
+        batch_sizes,
+        sorted_indices,
+        unsorted_indices
+    )
 
 
 def _pad_rtl(sequence: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
