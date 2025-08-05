@@ -78,6 +78,83 @@ class GradientReversalLayer(Module):
             raise TypeError('Input must be a torch.Tensor.')
         return local_F.gradient_reversal(x, self.alpha)
 
+class DNN(Module):
+    def __init__(
+        self, *layer_dims: int,
+        flip_gradient: bool = False,
+        batchnorm: bool = False,
+        bias: bool = True,
+        dropout: float | None = None,
+        activation: str | None = 'relu',
+        residual: bool = False
+    ):
+        '''
+        A Deep Neural Network (DNN) or Multi-Layer Perceptron (MLP) module.
+
+        Args:
+            layer_dims (*int): The dimensions of each layer in the network, including input and output dimensions.
+            flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
+            batchnorm (bool): Whether to apply batch normalization after each linear layer.
+            bias (bool): Whether to include a bias term in the linear layers.
+            dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
+            activation (str | None): Activation function to apply after each layer.
+            residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
+
+        Shapes
+        ------
+        * Input shape: (*, layer_dims[0])
+        * Output shape: (*, layer_dims[-1])
+        '''
+        super(DNN, self).__init__()
+
+        # Sanity checks
+        if len(layer_dims) < 2:
+            raise ValueError('DNN must have at least one layer.')
+        if any(dim <= 0 for dim in layer_dims):
+            raise ValueError('All layer dimensions must be positive integers.')
+        if residual and layer_dims[0] != layer_dims[-1]:
+            raise ValueError('Residual connections require input and output dimensions to match.')
+        if dropout is not None and (dropout < 0.0 or dropout > 1.0):
+            raise ValueError('Dropout must be between 0.0 and 1.0.')
+        # Warning conditions
+        # 1. batchnorm and bias are both True
+        if batchnorm and bias:
+            warnings.warn(
+                'Redundant bias in linear layers when using batch normalization.',
+                RuntimeWarning
+            )
+
+        in_dims, out_dims = layer_dims[:-1], layer_dims[1:]
+        layers = []
+
+        if flip_gradient:
+            self.rev = GradientReversalLayer()
+        else:
+            self.rev = torch.nn.Identity()
+        for i, (in_dim, out_dim) in enumerate(zip(in_dims, out_dims)):
+            current_layer = []
+            current_layer.append(torch.nn.Linear(in_dim, out_dim, bias=bias))
+            if batchnorm:
+                current_layer.append(torch.nn.BatchNorm1d(out_dim))
+            if activation is not None:
+                current_layer.append(Activation(activation))
+            if dropout is not None:
+                current_layer.append(torch.nn.Dropout(dropout))
+
+            layers.append(torch.nn.Sequential(*current_layer))
+
+        self.residual = residual
+        self.batchnorm = batchnorm
+        self.seq = torch.nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.rev(x)
+        y = self.seq(x)
+
+        if self.residual:
+            y = y + x
+        return y
+
 class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     def get_attention_map(
         self, src: torch.Tensor, src_mask: torch.Tensor | None = None,
