@@ -6,12 +6,14 @@ Originally in ctorch.py
 
 
 import torch
+import warnings
 
 from . import functional as local_F
 
 class Module(torch.nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._numel = 0
         self._device_tracker = torch.nn.Parameter(torch.tensor(0.0, device='cpu'))
 
     @property
@@ -20,6 +22,19 @@ class Module(torch.nn.Module):
         Returns the device of the module
         '''
         return self._device_tracker.device
+
+    @property
+    def num_parameters(self):
+        '''
+        Returns the number of parameters in the module
+        '''
+        if self._numel == 0:
+            self._numel = sum(
+                p.numel()
+                for name, p in self.named_parameters(recurse=True)
+                if '_device_tracker' not in name
+            )
+        return self._numel
 
 class Activation(Module):
     ''' Arbitrary activation function module. '''

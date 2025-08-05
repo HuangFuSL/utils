@@ -25,6 +25,30 @@ class TestModule(unittest.TestCase):
         module.to('cpu')
         self.assertEqual(module.device.type, 'cpu')
 
+    def test_num_parameters(self):
+        class _module(Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(10, 5)
+
+        module = _module()
+        self.assertEqual(module.num_parameters, 10 * 5 + 5)
+
+    def test_nested_num_parameters(self):
+        class _module1(Module):
+            def __init__(self, a, b):
+                super().__init__()
+                self.linear1 = torch.nn.Linear(a, b)
+
+        class _module2(Module):
+            def __init__(self):
+                super().__init__()
+                self.linear2 = torch.nn.Linear(5, 2)
+                self.module = _module1(10, 5)
+
+        module = _module2()
+        self.assertEqual(module.num_parameters, 5 * 2 + 2 + 10 * 5 + 5)
+
 class TestGradientReversalLayer(unittest.TestCase):
     def test_GradientReversalLayer(self):
         layer = GradientReversalLayer()
