@@ -155,6 +155,41 @@ class DNN(Module):
             y = y + x
         return y
 
+class DeEmbedding(Module):
+    def __init__(self, embedding: torch.nn.Embedding):
+        '''
+        De-embedding layer that maps from the embedding space back to the multinomial distribution over the vocabulary.
+
+        Args:
+            embedding (torch.nn.Embedding): The embedding layer to de-embed from.
+
+        Shapes
+        ------
+        * Input shape: (*, embedding.embedding_dim)
+        * Output shape: (*, embedding.num_embeddings)
+        '''
+        super().__init__()
+        self.embedding = embedding
+        self.softmax = torch.nn.Softmax(dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the de-embedding layer.
+
+        Args:
+            x (torch.Tensor): Tensor of shape (*, D), where D is the embedding dimension.
+
+        Returns:
+            torch.Tensor: Tensor of shape (*, num_embeddings), where num_embeddings is the size of the embedding.
+        '''
+        if x.dim() < 2:
+            raise ValueError('Input tensor must have at least 2 dimensions.')
+        if x.shape[-1] != self.embedding.embedding_dim:
+            raise ValueError(f'Input tensor must have last dimension of size {self.embedding.embedding_dim}, but got {x.shape[-1]}.')
+
+        ret = torch.einsum('...d,ed->...e', x, self.embedding.weight)
+        return self.softmax(ret)
+
 class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     def get_attention_map(
         self, src: torch.Tensor, src_mask: torch.Tensor | None = None,
