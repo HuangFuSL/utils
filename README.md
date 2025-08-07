@@ -21,4 +21,4 @@ Use the following script to update the submodule:
 git submodule update --remote --merge
 ```
 
-[Full Documentation](documentation.pdf)
+[Full Documentation](doc/build/latex/utils.pdf)
