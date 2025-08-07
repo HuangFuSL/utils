@@ -11,7 +11,7 @@ import abc
 from typing import Generator, Tuple
 import torch
 
-from cprint import cformat
+from ..cprint import cformat
 
 def auc_score(y_true: torch.Tensor, y_score: torch.Tensor) -> float:
     """

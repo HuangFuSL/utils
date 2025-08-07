@@ -15,7 +15,7 @@ import logging
 import copy
 from typing import Any, Dict, List, Tuple
 
-from cprint import cprefix, RESET
+from .cprint import cprefix, RESET
 
 
 class BaseColoredFormatter(logging.Formatter):
