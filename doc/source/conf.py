@@ -33,3 +33,6 @@ exclude_patterns = []
 
 html_theme = 'alabaster'
 html_static_path = ['_static']
+
+# LaTeX
+latex_toplevel_sectioning = 'chapter'

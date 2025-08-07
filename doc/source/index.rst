@@ -6,13 +6,47 @@
 utils documentation
 ===================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+.. automodule:: utils
+   :members:
+   :show-inheritance:
+   :undoc-members:
 
+PyTorch Utilities
+-----------------
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 4
 
-   modules
+   utils.ctorch
+
+Sampler Utilities
+-----------------
+
+.. toctree::
+   :maxdepth: 4
+
+   utils.sampler
+
+Logging Utilities
+-----------------
+
+.. automodule:: utils.clogging
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+Printing Utilities
+------------------
+
+.. automodule:: utils.cprint
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
+Argument Parsing Utilities
+--------------------------
+
+.. automodule:: utils.parser
+   :members:
+   :show-inheritance:
+   :undoc-members:
