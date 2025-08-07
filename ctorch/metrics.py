@@ -1,10 +1,5 @@
 '''
-cmetrics.py
-
-Author: HuangFuSL
-Date: 2025-07-02
-
-This module provides utility functions for computing various metrics in PyTorch.
+`utils.ctorch.metrics` - Utility functions for computing metrics in PyTorch
 '''
 
 import abc
@@ -173,6 +168,9 @@ class BatchedMetric(abc.ABC):
         """
         Initialize the BatchedMetric instance.
         This class is intended to be used as a base class for metrics that can be computed in batches.
+
+        Args:
+            **kwargs: Additional keyword arguments that can be used to configure the metric.
         """
         self.kwargs = kwargs
         self.reset()
@@ -198,6 +196,12 @@ class BatchedMetric(abc.ABC):
         self._accumulator.send((y_true, y_score))
 
     def finalize(self) -> float:
+        '''
+        Finalize the metric computation and return the accumulated value.
+
+        Returns:
+            float: The computed metric value.
+        '''
         try:
             if self._accumulator is None:
                 raise RuntimeError("Metric accumulator is not initialized.")
@@ -212,12 +216,14 @@ class BatchedAUC(BatchedMetric):
     Batched AUC metric for binary classification tasks.
     This class computes the AUC in a batch-wise manner using a generator.
 
-    Usage:
-    auc_metric = BatchedAUC(nbins=1000, device='cpu', logit=False)
-    for batch in data_loader:
-        y_true, y_score = batch
-        auc_metric(y_true, y_score)
-    auc_value = auc_metric.finalize()
+    .. code-block:: python
+
+        auc_metric = BatchedAUC(nbins=1000, device='cpu', logit=False)
+        for batch in data_loader:
+            y_true, y_score = batch
+            auc_metric(y_true, y_score)
+        auc_value = auc_metric.finalize()
+
     """
     def __init__(self, nbins: int = 1000, device: str | torch.device = 'cpu', logit: bool = False):
         super().__init__(nbins=nbins, device=device, logit=logit)
@@ -226,6 +232,14 @@ class BatchedAUC(BatchedMetric):
         self, nbins: int = 1000, device: str | torch.device = 'cpu',
         logit: bool = False
     ):
+        '''
+        Compute the AUC in a batch-wise manner using a generator.
+
+        Args:
+            nbins (int): Number of bins to use for the histogram.
+            device (str | torch.device): Device to use for computation.
+            logit (bool): If True, apply sigmoid to the scores before computing AUC.
+        '''
         binned = torch.linspace(0, 1, nbins + 1, device=device)
         pos_count = torch.zeros_like(binned, dtype=torch.long, device=device)
         neg_count = torch.zeros_like(binned, dtype=torch.long, device=device)
@@ -258,6 +272,12 @@ class BatchedHitRate(BatchedMetric):
         super().__init__(k=k)
 
     def accumulator(self, k: int | None = None):
+        '''
+        Compute the hit rate in a batch-wise manner using a generator.
+
+        Args:
+            k (int): The number of top predictions to consider.
+        '''
         hits = 0
         total = 0
 
@@ -284,6 +304,12 @@ class BatchedNDCG(BatchedMetric):
         super().__init__(k=k)
 
     def accumulator(self, k: int | None = None):
+        '''
+        Compute the NDCG in a batch-wise manner using a generator.
+
+        Args:
+            k (int): The number of top predictions to consider.
+        '''
         if k is None:
             k = self.kwargs.get('k', None)
         running_ndcg = 0.0
@@ -306,10 +332,22 @@ class BatchedNDCG(BatchedMetric):
 
 
 class MetricFormatter():
+    '''
+    Formats the output of metrics during training.
+    '''
     def __init__(
         self, name: str, starting_epoch: int = 0,
         larger_better: bool = True, eps: float = 5e-4
     ):
+        '''
+        Initialize the MetricFormatter.
+
+        Args:
+            name (str): Name of the metric.
+            starting_epoch (int): Starting epoch for the metric.
+            larger_better (bool): If True, larger values are better.
+            eps (float): Small epsilon value to determine significant changes.
+        '''
         self.name = name
         self.epoch = starting_epoch
         self.larger_better = larger_better
@@ -320,6 +358,12 @@ class MetricFormatter():
         self.eps = eps
 
     def update(self, value: float):
+        '''
+        Update the metric with a new value.
+
+        Args:
+            value (float): The new value to update the metric with.
+        '''
         self.last = self.current
         self.current = value
         if (self.larger_better and value > self.best) or \
@@ -329,6 +373,12 @@ class MetricFormatter():
         self.epoch += 1
 
     def format(self) -> str:
+        '''
+        Format the metric for display.
+
+        Returns:
+            str: Formatted string representation of the metric.
+        '''
         if self.larger_better:
             color_dict = {True: 'green', False: 'red'}
         else:

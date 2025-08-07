@@ -1,18 +1,13 @@
 '''
-parser.py
-
-Author: HuangFuSL
-Date: 2025-06-25
+`utils.parser`
 
 A utility to automatically parse command line arguments into a dataclass instance.
-This module provides a decorator `@auto_cli` that can be applied to a dataclass.
-After applying the decorator, you can call `parse_args()` on the dataclass to
+This module provides a decorator ``@auto_cli`` that can be applied to a dataclass.
+After applying the decorator, you can call ``parse_args()`` on the dataclass to
 parse command line arguments and return an instance of the dataclass.
 
-1. A special field `--config` is added to allow loading configuration from a
-file in JSON, YAML, or TOML format.
-2. When a field is specified in both the command line arguments and the
-configuration file, the command line argument takes precedence.
+#. A special field ``--config`` is added to allow loading configuration from a file in JSON, YAML, or TOML format.
+#. When a field is specified in both the command line arguments and the configuration file, the command line argument takes precedence.
 '''
 
 from __future__ import annotations
@@ -164,7 +159,62 @@ def auto_cli(
     ...
 
 def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T]] | Callable[[Type[T]], Type[_DECORATED[T]]]:
-    ''' Decorate and inject a `parse_args` method into a dataclass.'''
+    '''
+    Automatically generates an argument parser for a dataclass with type hints.
+    Field types, including basic types, and ``Optional`` are automatically
+    recognized and converted corresponding argument types. Complex types like
+    lists and dictionaries can be input as strings in json format.
+
+    Apart from the fields of the dataclass, ``auto_cli`` also adds a ``--config``
+    argument to the parser for loading configuration settings from a json, yaml,
+    or toml file. Values from the configuration file have a lower priority than
+    command line arguments.
+
+    The decorated function will get the following new class methods:
+
+    - ``get_parser(prefix: str = '') -> argparse.ArgumentParser``:
+        Returns an `argparse.ArgumentParser` instance with arguments based on
+        the dataclass fields. The `prefix` argument is prepended to each
+        argument name. The parser returned does not include the ``--config``
+        argument for loading configuration files.
+
+        Example:
+
+        .. code-block:: python
+
+            @auto_cli
+            @dataclasses.dataclass
+            class YourClass:
+                name: str = 'DefaultName'
+                age: int = 25
+
+            parser = YourClass.get_parser()
+            parser_prefix = YourClass.get_parser(prefix='man')
+
+        The generated `parser` will accept the following arguments:
+
+        * ``--name``: The name argument with a default value of 'DefaultName'.
+        * ``--age``: The age argument with a default value of 25.
+
+        The generated ``parser_prefix`` will accept the following arguments:
+
+        * ``--man-name``: The name argument with a default value of 'DefaultName'.
+        * ``--man-age``: The age argument with a default value of 25.
+
+    - ``parse_namespace(ns: argparse.Namespace, kw: Dict[str, Any] = None, prefix: str = '') -> 'YourClass'``:
+        Parses an ``argparse.Namespace`` instance and a kwargs dictionary into an
+        instance of the dataclass. Prefix is prepended to each argument name.
+        The ``kw`` dictionary is loaded from a config file if specified in ``ns``.
+        A ``ValueError`` is raised if a required argument is missing from both
+        ``ns`` and ``kw``, and no default value is provided.
+    - ``parse_args(argv: List[str] = None) -> 'YourClass'``:
+        Parses command line arguments and returns an instance of the dataclass.
+        If ``argv`` is ``None``, it uses ``sys.argv[1:]``. The method also handles
+        config files specified in the command line arguments.
+
+    Returns:
+        Type[cls]: The decorated class.
+    '''
 
     @functools.wraps(auto_cli)
     def wrap(datacls: Type[T]) -> Type[_DECORATED[T]]:
@@ -291,6 +341,21 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
 def get_all_parser(
     dataclass = None, **dataclasses
 ):
+    '''
+    Returns a combined ``argparse.ArgumentParser`` that merges the parsers of
+    multiple dataclasses into one, and then adds a ``--config`` argument for
+    loading configuration files.
+
+    The dataclass provided as a positional argument is treated as unprefixed,
+    while the others are prefixed with their keyword argument names.
+
+    Args:
+        dataclass (Optional[Any]): A single dataclass to include in the parser.
+        **dataclasses (Any): Additional dataclasses to include in the parser.
+
+    Returns:
+        argparse.ArgumentParser: An argument parser that includes all specified dataclasses.
+    '''
     dataclasses = dataclasses.copy()
     if dataclass is not None:
         dataclasses[''] = dataclass
@@ -307,6 +372,60 @@ def parse_all_args(
     '''
     Parse command line arguments into a dictionary of dataclass instances.
     Each dataclass is identified by its name in the `dataclasses` argument.
+
+    The ``parse_all_args`` function accepts two types of input:
+
+    1. ``parse_all_args(cli_args, dataclass, **dataclasses)``: where ``cli_args`` is
+       a list of command line arguments, ``dataclass`` is the unprefixed dataclass,
+       and ``dataclasses`` are additional prefixed dataclasses.
+    2. ``parse_all_args(dataclass, **dataclasses)``: where ``dataclass`` is the
+       unprefixed dataclass and ``dataclasses`` are additional prefixed dataclasses.
+       ``sys.argv[1:]`` is used as the command line arguments.
+
+    The result is a dictionary where the keys are the prefixes of the
+    dataclasses and the values are instances of those dataclasses, parsed from
+    the command line arguments. The unprefixed dataclass is stored under the
+    key ``''``.
+
+    Example::
+
+        @auto_cli
+        @dataclasses.dataclass
+        class ClassMain:
+            name: str = 'MainName'
+            age: int = 30
+
+        @auto_cli
+        @dataclasses.dataclass
+        class ClassAdditional:
+            address: str = 'DefaultAddress'
+            phone: str = '1234567890'
+
+        parser = get_all_parser(ClassMain, additional=ClassAdditional)
+
+    The generated parser will accept the following arguments:
+
+    * ``--name``: The name argument with a default value of ``'MainName'``.
+    * ``--age``: The age argument with a default value of ``30``.
+    * ``--additional-address``: The address argument with a default value of ``'DefaultAddress'``.
+    * ``--additional-phone``: The phone argument with a default value of ``'1234567890'``.
+
+    Or the following configuration files:
+
+    .. code-block:: yaml
+
+        name: 'MainName'
+        age: 30
+        additional_address: 'DefaultAddress'
+        additional_phone: '1234567890'
+
+    Args:
+        cli_args (List[str] | Any | None): Command line arguments to parse. If None, uses ``sys.argv[1:]``.
+        dataclass (Any | None): A single dataclass to include in the parsing.
+        **dataclasses (Any): Additional dataclasses to include in the parsing.
+
+    Returns:
+        Dict[str, Any]: A dictionary where keys are dataclass names and values are instances of those dataclasses.
     '''
     pass_down = None
     if isinstance(cli_args, list) or cli_args is None:

@@ -1,8 +1,5 @@
 '''
-cprint.py
-
-Author: HuangFuSL
-Date: 2025-06-24
+`utils.cprint` - Colorful Terminal Output
 
 A Python module for colorful terminal output with support for ANSI escape codes,
 xterm-256color, and true color (24-bit RGB). It provides functions to format
@@ -212,18 +209,17 @@ def cprefix(
     '''
     Generate an ANSI escape code prefix for formatting text with colors and styles.
 
-    Parameters:
-    - fg: Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
-    - bg: Background color (same format as fg).
-    - fallback: Whether to use fallback colors if the terminal does not support
-                the requested color depth.
-    - bf: Whether to use bold text.
-    - it: Whether to use italic text.
-    - us: Whether to underline the text.
-    - st: Whether to use strikethrough text (not supported in all terminals).
+    Args:
+        fg (str | int | Tuple[int, int, int] | None): Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
+        bg (str | int | Tuple[int, int, int] | None): Background color (same format as fg).
+        fallback (bool): Whether to use fallback colors if the terminal does not support the requested color depth.
+        bf (bool): Whether to use bold text.
+        it (bool): Whether to use italic text.
+        us (bool): Whether to underline the text.
+        st (bool): Whether to use strikethrough text (not supported in all terminals).
 
     Returns:
-    A string containing the ANSI escape code prefix.
+        str: A string containing the ANSI escape code prefix.
     '''
 
     seq = []
@@ -270,20 +266,20 @@ def cformat(
     '''
     Format a string with ANSI escape codes for colors and styles.
 
-    Parameters:
-    - text: The text to format.
-    - fg: Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
-    - bg: Background color (same format as fg).
-    - fallback: Whether to use fallback colors if the terminal does not support
-                the requested color depth.
-    - bf: Whether to use bold text.
-    - it: Whether to use italic text.
-    - us: Whether to underline the text.
-    - st: Whether to use strikethrough text (not supported in all terminals).
-    - reset: String to append after the formatted text (default is ANSI reset code).
+    Args:
+        text (str): The text to format.
+        fg (str | int | Tuple[int, int, int] | None): Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
+        bg (str | int | Tuple[int, int, int] | None): Background color (same format as fg).
+        fallback (bool): Whether to use fallback colors if the terminal does not support
+                         the requested color depth.
+        bf (bool): Whether to use bold text.
+        it (bool): Whether to use italic text.
+        us (bool): Whether to underline the text.
+        st (bool): Whether to use strikethrough text (not supported in all terminals).
+        reset (str): String to append after the formatted text (default is ANSI reset code).
 
     Returns:
-    A formatted string with ANSI escape codes.
+        str: A formatted string with ANSI escape codes.
     '''
     prefix = cprefix(
         fg=fg, dim=dim, bg=bg, fallback=fallback,
@@ -314,19 +310,20 @@ def cprint(
     styles (bold, italic, underline, strikethrough), and fallback to lower color
     grades if the terminal does not support the requested color depth.
 
-    Parameters:
-    - obj: Objects to print.
-    - fg: Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
-    - bg: Background color (same format as fg).
-    - fallback: Whether to use fallback colors if the terminal does not support
-                the requested color depth.
-    - bf: Whether to use bold text.
-    - it: Whether to use italic text.
-    - us: Whether to underline the text.
-    - st: Whether to use strikethrough text (not supported in all terminals).
-    - reset: String to append after the formatted text (default is ANSI reset code).
+    Args:
+        *obj (Any): Objects to print.
+        fg (str | int | Tuple[int, int, int] | None): Foreground color (color name, xterm-256color index, RGB tuple, or hex code).
+        bg (str | int | Tuple[int, int, int] | None): Background color (same format as fg).
+        fallback (bool): Whether to use fallback colors if the terminal does not support
+                         the requested color depth.
+        bf (bool): Whether to use bold text.
+        it (bool): Whether to use italic text.
+        us (bool): Whether to underline the text.
+        st (bool): Whether to use strikethrough text (not supported in all terminals).
+        reset (str): String to append after the formatted text (default is ANSI reset code).
 
     The following parameters are inherited from the built-in print function:
+
     - sep: Separator between objects.
     - end: String appended after the last object.
     - file: A file-like object (default is sys.stdout).

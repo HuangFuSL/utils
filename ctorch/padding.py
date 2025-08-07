@@ -25,7 +25,7 @@ def packed_unary_op(
         x (PackedSequence | torch.Tensor): The input data, either a PackedSequence or a regular tensor.
 
     Returns:
-        y (PackedSequence | torch.Tensor): The output after applying the function. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
+        PackedSequence | torch.Tensor: The output after applying the function. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
     '''
     if isinstance(x, torch.Tensor):
         return func(x)
@@ -53,7 +53,7 @@ def packed_binary_op(
         b (PackedSequence | torch.Tensor): The second input data, either a PackedSequence or a regular tensor.
 
     Returns:
-        out (PackedSequence | torch.Tensor): The output after applying the operation.
+        PackedSequence | torch.Tensor: The output after applying the operation.
     '''
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
         return op(a, b)
@@ -93,7 +93,7 @@ def packed_forward(
         packed_input (PackedSequence | torch.Tensor): The packed input data.
 
     Returns:
-        out (PackedSequence | torch.Tensor): The output after applying the module. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
+        PackedSequence | torch.Tensor: The output after applying the module. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
     '''
     return packed_unary_op(module.forward, packed_input)
 
@@ -108,7 +108,7 @@ def packed_concat(
         dim (int): Dimension along which to concatenate. Default is -1 (last dimension). The dimension must not be 0 (the packed time dimension). The sequence length dimension (dimension 1 of the padded tensor where batch_size is True) is omitted.
 
     Returns:
-        out (PackedSequence): A new PackedSequence object containing the concatenated data.
+        PackedSequence: A new PackedSequence object containing the concatenated data.
     '''
     if not packed_seq:
         raise ValueError('packed_seq must not be empty.')
@@ -234,6 +234,15 @@ def pad_packed_sequence_right(
 ):
     '''
     Like `torch.nn.utils.rnn.pad_packed_sequence` but right-aligns the sequences.
+
+    Args:
+        sequence (torch.nn.utils.rnn.PackedSequence): The packed sequence to pad.
+        batch_first (bool): If True, the output will be of shape (batch_size, seq_len, ...). If False, the output will be of shape (seq_len, batch_size, ...).
+        padding_value (float): The value to use for padding.
+        total_length (int | None): If specified, the output will be padded to this length. If None, the output will be padded to the maximum length of the sequences in the packed sequence
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: The padded tensor and the lengths of the original sequences.
     '''
     # First, pad the packed sequence to the left
     # Shape: B, T, ... or T, B, ... depending on batch_first
@@ -261,6 +270,15 @@ def pack_padded_sequence_right(
 ) -> torch.nn.utils.rnn.PackedSequence:
     '''
     Like `torch.nn.utils.rnn.pack_padded_sequence` but accepts right-aligned sequences.
+
+    Args:
+        input (torch.Tensor): The input tensor, which should be right-aligned.
+        lengths (torch.Tensor): A 1D tensor containing the lengths of each sequence.
+        batch_first (bool): If True, the input is expected to be of shape (batch_size, seq_len, ...). Otherwise, the input is expected to be of shape (seq_len, batch_size, ...).
+        enforce_sorted (bool): If True, the input sequences must be sorted by length in descending order. If False, the input sequences can be in any order.
+
+    Returns:
+        torch.nn.utils.rnn.PackedSequence: A packed sequence object containing the right-aligned sequences.
     '''
 
     if batch_first:
@@ -287,6 +305,14 @@ def unpad_sequence_right(
 ) -> List[torch.Tensor]:
     '''
     Like `torch.nn.utils.rnn.unpad_sequence` but accepts right-aligned sequences.
+
+    Args:
+        input (torch.Tensor): The input tensor, which should be right-aligned.
+        lengths (torch.Tensor): A 1D tensor containing the lengths of each sequence.
+        batch_first (bool): If True, the input is expected to be of shape (batch_size, seq_len, ...). Otherwise, the input is expected to be of shape (seq_len, batch_size, ...).
+
+    Returns:
+        List[torch.Tensor]: A list of tensors, each representing a sequence with padding removed.
     '''
     if not batch_first:
         input = input.transpose(0, 1)
@@ -302,6 +328,12 @@ def unpad_sequence_right(
 def get_key_padding_mask_left(lengths: torch.Tensor):
     '''
     Create a key padding mask for sequences based on their lengths, with sequences left-aligned.
+
+    Args:
+        lengths (torch.Tensor): A 1D tensor containing the lengths of each sequence.
+
+    Returns:
+        torch.Tensor: A boolean mask tensor indicating the padding positions.
     '''
     # lengths should be a 1D long tensor
     if lengths.dim() != 1:
@@ -316,6 +348,12 @@ def get_key_padding_mask_left(lengths: torch.Tensor):
 def get_key_padding_mask_right(lengths: torch.Tensor):
     '''
     Create a key padding mask for sequences based on their lengths, with sequences right-aligned.
+
+    Args:
+        lengths (torch.Tensor): A 1D tensor containing the lengths of each sequence.
+
+    Returns:
+        torch.Tensor: A boolean mask tensor indicating the padding positions.
     '''
     # lengths should be a 1D long tensor
     if lengths.dim() != 1:
@@ -330,6 +368,12 @@ def get_key_padding_mask_right(lengths: torch.Tensor):
 def get_tensor_memory_size(tensor: torch.Tensor) -> int:
     '''
     Get the memory size of a tensor in bytes.
+
+    Args:
+        tensor (torch.Tensor): The input tensor.
+
+    Returns:
+        int: The memory size of the tensor in bytes.
     '''
     if not isinstance(tensor, torch.Tensor):
         raise TypeError('Input must be a torch.Tensor.')
@@ -339,6 +383,12 @@ def get_tensor_memory_size(tensor: torch.Tensor) -> int:
 def get_model_memory_size(model: torch.nn.Module) -> int:
     '''
     Get the total memory size of a model in bytes.
+
+    Args:
+        model (torch.nn.Module): The input model.
+
+    Returns:
+        int: The total memory size of the model in bytes.
     '''
     if not isinstance(model, torch.nn.Module):
         raise TypeError('Input must be a torch.nn.Module.')

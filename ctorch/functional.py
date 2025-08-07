@@ -1,11 +1,5 @@
 '''
-functional.py
-
-Author: HuangFuSL
-Date: 2025-06-30
-
-This module provides functional utilities for PyTorch tensors. Part of the file
-is merged from cstats.py.
+`utils.ctorch.functional` - Functional utilities for PyTorch tensors.
 '''
 import math
 
@@ -21,15 +15,18 @@ def log_norm_pdf(
     """
     Calculate the log probability density function of a normal distribution.
 
-    Parameters:
-    - x: Input tensor, shape (N, D), where N is the number of samples and D is the number of dimensions.
-    - mean: Mean of the normal distribution, shape (D,), or (N, D)
-    - Sigma: Covariance matrix of the normal distribution, shape (N, D, D), (N, D), (N,), (D, D), (D,), or a scalar.
-    - logSigma: Logarithm of the covariance matrix, same shape as Sigma.
-    - batch_first: If True, indicates that the first dimension of Sigma is the batch size (N).
+    .. math::
+        \\log p(x) = -\\frac{1}{2} \\left( D \\log(2\\pi) + \\log |\\Sigma| + (x - \\mu)^T \\Sigma^{-1} (x - \\mu) \\right)
+
+    Args:
+        x (torch.Tensor): Input tensor, shape (N, D), where N is the number of samples and D is the number of dimensions.
+        mean (torch.Tensor): Mean of the normal distribution, shape (D,), or (N, D)
+        Sigma (torch.Tensor | None): Covariance matrix of the normal distribution, shape (N, D, D), (N, D), (N,), (D, D), (D,), or a scalar.
+        logSigma (torch.Tensor | None): Logarithm of the covariance matrix, same shape as Sigma.
+        batch_first (bool | None): If True, indicates that the first dimension of Sigma is the batch size (N).
 
     Returns:
-    - Tensor containing the log PDF values.
+        torch.Tensor: Tensor containing the log PDF values.
     """
     N, D = x.shape
     PI = x.new_tensor(torch.pi)
@@ -157,21 +154,31 @@ def norm_pdf(
     """
     Calculate the log probability density function of a normal distribution.
 
-    Parameters:
-    - x: Input tensor, shape (N, D), where N is the number of samples and D is the number of dimensions.
-    - mean: Mean of the normal distribution, shape (D,), or (N, D)
-    - Sigma: Covariance matrix of the normal distribution, shape (N, D, D), (N, D), (N,), (D, D), (D,), or a scalar.
-    - logSigma: Logarithm of the covariance matrix, same shape as Sigma.
-    - batch_first: If True, indicates that the first dimension of Sigma is the batch size (N).
+    Args:
+        x (torch.Tensor): Input tensor, shape (N, D), where N is the number of samples and D is the number of dimensions.
+        mean (torch.Tensor): Mean of the normal distribution, shape (D,), or (N, D)
+        Sigma (torch.Tensor | None): Covariance matrix of the normal distribution, shape (N, D, D), (N, D), (N,), (D, D), (D,), or a scalar.
+        logSigma (torch.Tensor | None): Logarithm of the covariance matrix, same shape as Sigma.
+        batch_first (bool): If True, indicates that the first dimension of Sigma is the batch size (N).
 
     Returns:
-    - Tensor containing the PDF values.
+        torch.Tensor: Tensor containing the PDF values.
     """
     return torch.exp(log_norm_pdf(x, mean, Sigma, logSigma))
 
 def gradient_reversal(
     x: torch.Tensor, alpha: float = 1.0
 ) -> torch.Tensor:
+    '''
+    Apply a gradient reversal layer to the input tensor. The forward pass is the identity function, but during backpropagation, the gradient is multiplied by -alpha.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+        alpha (float): Scaling factor for the gradient reversal. Default is 1.0.
+
+    Returns:
+        torch.Tensor: The input tensor with the gradient reversed during backpropagation.
+    '''
     return ops.GradientReversalOp.apply(x, alpha)
 
 def rbf_kernel(
@@ -183,18 +190,19 @@ def rbf_kernel(
     '''
     Compute the Radial Basis Function (RBF) kernel between two sets of tensors.
 
-    Parameters:
-    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
-    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
-    - sigma: Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
-    - gamma: 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
-    - reduce:
-        - If True, returns the mean of RBF kernel values under different bandwidths.
-        - If False, returns the RBF kernel values for each bandwidth.
-        - If a tensor, it should have shape (K,) and will be used as mean weight.
+    Args:
+        x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+        y (torch.Tensor | None): Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+        sigma (torch.Tensor | int | float | None): Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+        gamma (torch.Tensor | int | float | None): 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+        reduce (torch.Tensor | bool): Whether to reduce the output.
+
+            * If True, returns the mean of RBF kernel values under different bandwidths.
+            * If False, returns the RBF kernel values for each bandwidth.
+            * If a tensor, it should have shape (K,) and will be used as mean weight.
 
     Returns:
-    - Tensor containing the RBF kernel values, shape (N, M) or (K, N, M) if multiple kernels are used.
+        torch.Tensor: Tensor containing the RBF kernel values, shape (N, M) or (K, N, M) if multiple kernels are used.
     '''
     # Sanity checks
     if sigma is not None and gamma is not None:
@@ -247,18 +255,18 @@ def mmd_distance(
     """
     Compute the Maximum Mean Discrepancy (MMD) distance between two sets of tensors.
 
-    Parameters:
-    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
-    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
-    - sigma: Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
-    - gamma: 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
-    - reduce:
-        - If True, returns the mean MMD distance under different bandwidths.
-        - If False, returns the MMD distance for each bandwidth.
-        - If a tensor, it should have shape (K,) and will be used as mean weight.
+    Args:
+        x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+        y (torch.Tensor): Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+        sigma (torch.Tensor | int | float | None): Bandwidth parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+        gamma (torch.Tensor | int | float | None): 1 / (2 * sigma^2) parameter for the RBF kernel, scalar, or shape (K,), where K is the number of kernels.
+        reduce (bool | torch.Tensor): Whether to reduce the output.
+            * If True, returns the mean MMD distance under different bandwidths.
+            * If False, returns the MMD distance for each bandwidth.
+            * If a tensor, it should have shape (K,) and will be used as mean weight.
 
     Returns:
-    - Tensor containing the MMD distance values, shape (K,) if reduce is False, or a scalar otherwise,
+        torch.Tensor: Tensor containing the MMD distance values, shape (K,) if reduce is False, or a scalar otherwise,
     """
     rbf_xx = rbf_kernel(x, x, sigma=sigma, gamma=gamma, reduce=reduce).mean(dim=(0, 1))
     rbf_yy = rbf_kernel(y, y, sigma=sigma, gamma=gamma, reduce=reduce).mean(dim=(0, 1))
@@ -273,16 +281,16 @@ def wasserstein_distance(
     """
     Compute the Wasserstein distance between two sets of tensors using the Sinkhorn algorithm.
 
-    Parameters:
-    - x: First tensor, shape (N, D), where N is the number of samples and D is the number of features.
-    - y: Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
-    - p: Order of the norm to use for the distance calculation.
-    - eps: Small value to avoid division by zero.
-    - wasser_iters: Number of iterations for the Sinkhorn algorithm.
-    - wasser_eps: Epsilon value for the Sinkhorn algorithm.
+    Args:
+        x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
+        y (torch.Tensor): Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
+        p (float): Order of the norm to use for the distance calculation.
+        eps (float): Small value to avoid division by zero.
+        wasser_iters (int): Number of iterations for the Sinkhorn algorithm.
+        wasser_eps (float): Epsilon value for the Sinkhorn algorithm.
 
     Returns:
-    - Tensor containing the Wasserstein distance value.
+        torch.Tensor: Tensor containing the Wasserstein distance value.
     """
     # Sanity checks
     if p <= 0:

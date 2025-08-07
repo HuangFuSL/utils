@@ -5,12 +5,16 @@ Originally in ctorch.py
 '''
 
 
+from typing import TYPE_CHECKING, List
 import torch
 import warnings
 
 from . import functional as local_F
 
 class Module(torch.nn.Module):
+    '''
+    A base class for all modules in ctorch. Supports device tracking and parameter counting.
+    '''
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._numel = 0
@@ -19,14 +23,20 @@ class Module(torch.nn.Module):
     @property
     def device(self):
         '''
-        Returns the device of the module
+        Get the device of the module.
+
+        Returns:
+            torch.device: The device on which the module's parameters are located.
         '''
         return self._device_tracker.device
 
     @property
     def num_parameters(self):
         '''
-        Returns the number of parameters in the module
+        Get the number of parameters in the module.
+
+        Returns:
+            int: The total number of parameters in the module.
         '''
         if self._numel == 0:
             self._numel = sum(
@@ -37,7 +47,14 @@ class Module(torch.nn.Module):
         return self._numel
 
 class Activation(Module):
-    ''' Arbitrary activation function module. '''
+    '''
+    Arbitrary activation function module.
+
+    Args:
+        name (str): The name of the activation function.
+        *args: Positional arguments for the activation function.
+        **kwargs: Keyword arguments for the activation function.
+    '''
     def __init__(self, name: str, *args, **kwargs):
         super().__init__()
         activation = {
@@ -66,6 +83,12 @@ class Activation(Module):
 
 
 class GradientReversalLayer(Module):
+    '''
+    A layer that reverses the gradient during backpropagation.
+
+    Args:
+        alpha (float): The scaling factor for the gradient reversal. Default is 1.0.
+    '''
     def __init__(self, alpha: float = 1.0):
         super().__init__()
         self.alpha = alpha
@@ -73,12 +96,32 @@ class GradientReversalLayer(Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''
         Forward pass for the gradient reversal layer.
+
+        Args:
+            x (torch.Tensor): Input tensor.
         '''
         if not isinstance(x, torch.Tensor):
             raise TypeError('Input must be a torch.Tensor.')
         return local_F.gradient_reversal(x, self.alpha)
 
 class DNN(Module):
+    '''
+    A Deep Neural Network (DNN) or Multi-Layer Perceptron (MLP) module.
+
+    Args:
+        layer_dims (*int): The dimensions of each layer in the network, including input and output dimensions.
+        flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
+        batchnorm (bool): Whether to apply batch normalization after each linear layer.
+        bias (bool): Whether to include a bias term in the linear layers.
+        dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
+        activation (str | None): Activation function to apply after each layer.
+        residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
+
+    Shapes:
+
+        * Input shape: (*, layer_dims[0])
+        * Output shape: (*, layer_dims[-1])
+    '''
     def __init__(
         self, *layer_dims: int,
         flip_gradient: bool = False,
@@ -88,23 +131,6 @@ class DNN(Module):
         activation: str | None = 'relu',
         residual: bool = False
     ):
-        '''
-        A Deep Neural Network (DNN) or Multi-Layer Perceptron (MLP) module.
-
-        Args:
-            layer_dims (*int): The dimensions of each layer in the network, including input and output dimensions.
-            flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
-            batchnorm (bool): Whether to apply batch normalization after each linear layer.
-            bias (bool): Whether to include a bias term in the linear layers.
-            dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
-            activation (str | None): Activation function to apply after each layer.
-            residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
-
-        Shapes
-        ------
-        * Input shape: (*, layer_dims[0])
-        * Output shape: (*, layer_dims[-1])
-        '''
         super(DNN, self).__init__()
 
         # Sanity checks
@@ -148,6 +174,15 @@ class DNN(Module):
         self.seq = torch.nn.Sequential(*layers)
 
     def forward(self, x):
+        '''
+        Forward pass for the DNN module.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (*, layer_dims[0]).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (*, layer_dims[-1]).
+        '''
         x = self.rev(x)
         y = self.seq(x)
 
@@ -163,10 +198,10 @@ class DeEmbedding(Module):
         Args:
             embedding (torch.nn.Embedding): The embedding layer to de-embed from.
 
-        Shapes
-        ------
-        * Input shape: (*, embedding.embedding_dim)
-        * Output shape: (*, embedding.num_embeddings)
+        Shapes:
+
+            * Input shape: (*, embedding.embedding_dim)
+            * Output shape: (*, embedding.num_embeddings)
         '''
         super().__init__()
         self.embedding = embedding
@@ -191,12 +226,24 @@ class DeEmbedding(Module):
         return self.softmax(ret)
 
 class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
+    '''
+    A Transformer encoder layer with additional functionality to get attention maps.
+    '''
     def get_attention_map(
         self, src: torch.Tensor, src_mask: torch.Tensor | None = None,
         src_key_padding_mask: torch.Tensor | None = None, is_causal: bool = False
     ):
         '''
         Get the attention map from the encoder layer.
+
+        Args:
+            src (torch.Tensor):
+            src_mask (torch.Tensor | None):
+            src_key_padding_mask (torch.Tensor | None):
+            is_causal (bool):
+
+        Returns:
+            torch.Tensor: The attention weights of shape (batch_size, num_heads, seq_len, seq_len).
         '''
         if not isinstance(src, torch.Tensor):
             raise TypeError('src must be a torch.Tensor.')
@@ -231,6 +278,18 @@ class TransformerDecoderLayer(torch.nn.TransformerDecoderLayer):
     ):
         '''
         Get the self-attention map from the decoder layer.
+
+        Args:
+            tgt (torch.Tensor):
+            tgt_mask (torch.Tensor | None):
+            memory_mask (torch.Tensor | None):
+            tgt_key_padding_mask (torch.Tensor | None):
+            memory_key_padding_mask (torch.Tensor | None):
+            tgt_is_causal (bool):
+            memory_is_causal (bool):
+
+        Returns:
+            torch.Tensor: The attention weights of shape (batch_size, num_heads, seq_len, seq_len).
         '''
         if not isinstance(tgt, torch.Tensor):
             raise TypeError('tgt must be a torch.Tensor.')
@@ -264,6 +323,19 @@ class TransformerDecoderLayer(torch.nn.TransformerDecoderLayer):
     ):
         '''
         Get the cross-attention map from the decoder layer.
+
+        Args:
+            tgt (torch.Tensor):
+            memory (torch.Tensor):
+            tgt_mask (torch.Tensor | None):
+            memory_mask (torch.Tensor | None):
+            tgt_key_padding_mask (torch.Tensor | None):
+            memory_key_padding_mask (torch.Tensor | None):
+            tgt_is_causal (bool):
+            memory_is_causal (bool):
+
+        Returns:
+            torch.Tensor: The attention weights of shape (batch_size, num_heads, tgt_seq_len, memory_seq_len).
         '''
         if not isinstance(tgt, torch.Tensor):
             raise TypeError('tgt must be a torch.Tensor.')

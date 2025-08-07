@@ -1,5 +1,5 @@
 '''
-device.py - Utilities for managing and monitoring GPU devices in PyTorch.
+`utils.ctorch.device` - Utilities for managing and monitoring GPU devices in PyTorch.
 '''
 import dataclasses
 import time
@@ -10,6 +10,16 @@ import torch
 
 @dataclasses.dataclass
 class GpuStat:
+    '''
+    Dataclass that represents the status of a GPU device.
+
+    Args:
+        idx (int): Index of the GPU.
+        name (str): Name of the GPU.
+        avg_util (float): Average utilization percentage over the sampling period.
+        avg_free_gb (float): Average free memory in GB over the sampling period.
+        total_gb (float): Total memory in GB of the GPU.
+    '''
     idx: int
     name: str
     avg_util: float
@@ -75,6 +85,16 @@ def get_best_device(
     window_sec: float = 3.0,
     interval_sec: float = 0.5
 ) -> str:
+    '''
+    Automatically selects the best available device based on GPU utilization and memory.
+
+    Args:
+        window_sec (float): Total time in seconds to collect GPU statistics.
+        interval_sec (float): Time in seconds between each sample.
+
+    Returns:
+        str: The best device identifier, either 'mps', 'cuda:<idx>', or 'cpu'.
+    '''
     if torch.mps.is_available():
         return 'mps'
     elif torch.cuda.is_available():

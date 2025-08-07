@@ -1,8 +1,5 @@
 '''
-clogging.py
-
-Author: HuangFuSL
-Date: 2025-06-24
+`utils.clogging` - Colored Logging Formatter
 
 A Python module that provides a colored logging formatter for the `logging` module.
 This module defines a base colored formatter class and a default implementation
@@ -27,10 +24,10 @@ class BaseColoredFormatter(logging.Formatter):
     message itself. The styles can be customized through the `get_color` method,
     which should return a argument dictionary compatible with `cprint.cprint`.
 
-    Parameters:
-    - fmt: The format string for the log messages.
-    - datefmt: The format string for the date in log messages.
-    - style: The style character used in the format string (default is '%').
+    Args:
+        fmt (str): The format string for the log messages.
+        datefmt (str | None): The format string for the date in log messages.
+        style (str): The character used in the format string (default is '%').
     (same as logging.Formatter)
     '''
 
@@ -63,6 +60,9 @@ class BaseColoredFormatter(logging.Formatter):
 
         `'base'` is a special field that can be used to apply a default color
         to the template.
+
+        Returns:
+            List[str]: A list of field names that can be colored.
         '''
         return [
             'levelname', 'name', 'asctime', 'filename', 'lineno',
@@ -71,7 +71,16 @@ class BaseColoredFormatter(logging.Formatter):
 
     def get_color(self, field_name: str, level: int) -> Dict[str, Any] | None:
         '''
-        Returns the color format for a given field name and logging level.
+        Returns the color format for a given field name and logging level. This
+        method should be overridden in subclasses to provide specific color
+        styles for different fields and levels.
+
+        Args:
+            field_name (str): The name of the field to color.
+            level (int): The logging level for which to get the color.
+
+        Returns:
+            Dict[str, Any] | None: A dictionary of color attributes compatible with `utils.cprint.cprint`.
         '''
         return None
 
@@ -104,10 +113,26 @@ class BaseColoredFormatter(logging.Formatter):
         Formats the time of the log record.
         If datefmt is provided, it formats the time accordingly.
         Otherwise, it uses the default format.
+
+        Args:
+            record (logging.LogRecord): The log record to format.
+            datefmt (str | None): The format string for the date.
+
+        Returns:
+            str: The formatted time string with color applied.
         '''
         return f'{self._color_code("asctime", record.levelno)}{super().formatTime(record, datefmt)}{self._reset_code[record.levelno]}'
 
     def format(self, record: logging.LogRecord) -> str:
+        '''
+        Formats the log record with colors applied to the specified fields.
+
+        Args:
+            record (logging.LogRecord): The log record to format.
+
+        Returns:
+            str: The formatted log message with colors applied.
+        '''
         new_record = copy.deepcopy(record)
 
         # Format the level name with color
