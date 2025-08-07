@@ -4,7 +4,7 @@ import unittest
 
 import torch
 from ctorch.padding import *
-
+from ctorch.nn import Module
 
 class TestPadding(unittest.TestCase):
     def test_pad_packed_sequence_right(self):
@@ -91,6 +91,23 @@ class TestPackedOps(unittest.TestCase):
         self.padded_b, _ = torch.nn.utils.rnn.pad_packed_sequence(
             self.packed_b, batch_first=True, padding_value=0.0
         )
+
+    def test_packed_forward(self):
+        class _module(Module):
+            def __init__(_self):
+                super().__init__()
+                _self.linear = torch.nn.Linear(self.D, self.D * 2)
+
+            def forward(_self, x):
+                return _self.linear(x)
+
+        model = _module()
+        model.eval()
+        apply_then_pad, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            packed_forward(model, self.packed_a), batch_first=True
+        )
+        pad_then_apply = model(self.padded_a)
+        self.assertTrue(torch.allclose(apply_then_pad[self.mask], pad_then_apply[self.mask]))
 
     def test_packed_unary(self):
         apply_then_pad, _ = torch.nn.utils.rnn.pad_packed_sequence(

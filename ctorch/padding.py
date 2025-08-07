@@ -31,7 +31,7 @@ def packed_unary_op(
         return func(x)
 
     ret = func(x.data)
-    if ret.shape != x.data.shape:
+    if ret.shape[0] != x.data.shape[0]:
         raise ValueError(
             f"Function {func.__name__} changed the shape of the data from {x.data.shape} to {ret.shape}."
         )
