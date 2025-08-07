@@ -196,3 +196,10 @@ cython_debug/
 # Rust
 target/
 Cargo.lock
+
+# Fix for pdf documentation build
+!doc/build/
+doc/build/*
+!doc/build/latex/
+doc/build/latex/*
+!doc/build/latex/*.pdf
