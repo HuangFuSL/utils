@@ -109,7 +109,7 @@ class DNN(Module):
     A Deep Neural Network (DNN) or Multi-Layer Perceptron (MLP) module.
 
     Args:
-        layer_dims (*int): The dimensions of each layer in the network, including input and output dimensions.
+        layer_dims (\\*int): The dimensions of each layer in the network, including input and output dimensions.
         flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
         batchnorm (bool): Whether to apply batch normalization after each linear layer.
         bias (bool): Whether to include a bias term in the linear layers.
@@ -119,8 +119,8 @@ class DNN(Module):
 
     Shapes:
 
-        * Input shape: (*, layer_dims[0])
-        * Output shape: (*, layer_dims[-1])
+        * Input shape: (\\*, layer_dims[0])
+        * Output shape: (\\*, layer_dims[-1])
     '''
     def __init__(
         self, *layer_dims: int,
@@ -178,10 +178,10 @@ class DNN(Module):
         Forward pass for the DNN module.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (*, layer_dims[0]).
+            x (torch.Tensor): Input tensor of shape (\\*, layer_dims[0]).
 
         Returns:
-            torch.Tensor: Output tensor of shape (*, layer_dims[-1]).
+            torch.Tensor: Output tensor of shape (\\*, layer_dims[-1]).
         '''
         x = self.rev(x)
         y = self.seq(x)
@@ -200,8 +200,8 @@ class DeEmbedding(Module):
 
         Shapes:
 
-            * Input shape: (*, embedding.embedding_dim)
-            * Output shape: (*, embedding.num_embeddings)
+            * Input shape: (\\*, embedding.embedding_dim)
+            * Output shape: (\\*, embedding.num_embeddings)
         '''
         super().__init__()
         self.embedding = embedding
@@ -212,10 +212,10 @@ class DeEmbedding(Module):
         Forward pass for the de-embedding layer.
 
         Args:
-            x (torch.Tensor): Tensor of shape (*, D), where D is the embedding dimension.
+            x (torch.Tensor): Tensor of shape (\\*, D), where D is the embedding dimension.
 
         Returns:
-            torch.Tensor: Tensor of shape (*, num_embeddings), where num_embeddings is the size of the embedding.
+            torch.Tensor: Tensor of shape (\\*, num_embeddings), where num_embeddings is the size of the embedding.
         '''
         if x.dim() < 2:
             raise ValueError('Input tensor must have at least 2 dimensions.')
