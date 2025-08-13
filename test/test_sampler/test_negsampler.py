@@ -7,18 +7,12 @@ import unittest
 import numpy as np
 from scipy import stats
 
-# Remove existing pre-built libraries if they exist
-for _ in os.listdir(os.path.join(os.path.dirname(__file__), '../sampler')):
-    for ext in ['.so', '.pyd', '.dll', '.dylib']:
-        if _.endswith(ext):
-            os.remove(os.path.join(os.path.dirname(__file__), '../sampler', _))
-
-from sampler import *
+from sampler import negsampler
 
 
 class TestSampler(unittest.TestCase):
     def setUp(self):
-        setup_threads(8)
+        negsampler.setup_threads(8)
 
     def test_batched_choices_with_negative(self):
         max_item = 10000
@@ -30,7 +24,9 @@ class TestSampler(unittest.TestCase):
                     range_ = np.arange(max_item)
                     exclude = np.random.randint(0, max_item, (n, 500))
                     begin = time.time()
-                    result = batched_choices_with_negative(range_, exclude, ki)
+                    result = negsampler.batched_choices_with_negative(
+                        range_, exclude, ki
+                    )
                     end = time.time()
 
                     # Check result shape
@@ -61,7 +57,9 @@ class TestSampler(unittest.TestCase):
                     weights = np.random.rand(max_item)
                     exclude = np.random.randint(0, max_item, (n, 500))
                     begin = time.time()
-                    result = weighted_batched_choices_with_negative(range_, weights, exclude, ki)
+                    result = negsampler.weighted_batched_choices_with_negative(
+                        range_, weights, exclude, ki
+                    )
                     end = time.time()
 
                     # Check result shape
@@ -91,7 +89,9 @@ class TestSampler(unittest.TestCase):
                     range_ = np.arange(max_item)
                     exclude = np.random.randint(0, max_item, (n, 500))
                     begin = time.time()
-                    result = batched_sample_with_negative(range_, exclude, ki)
+                    result = negsampler.batched_sample_with_negative(
+                        range_, exclude, ki
+                    )
                     end = time.time()
 
                     # Check result shape
@@ -125,7 +125,9 @@ class TestSampler(unittest.TestCase):
                     weights[0] = p / (1 - p) # 99% of the samples should include the first item
                     exclude = np.random.randint(1, max_item, (n, 500))
                     begin = time.time()
-                    result = weighted_batched_sample_with_negative(range_, weights, exclude, ki)
+                    result = negsampler.weighted_batched_sample_with_negative(
+                        range_, weights, exclude, ki
+                    )
                     end = time.time()
 
                     # Check result shape
@@ -157,7 +159,9 @@ class TestSampler(unittest.TestCase):
         k = 5
 
         with self.assertRaises(ValueError):
-            weighted_batched_sample_with_negative(range_, weights, exclude, k)
+            negsampler.weighted_batched_sample_with_negative(
+                range_, weights, exclude, k
+            )
 
     def test_randomness(self):
         range_ = np.arange(1000)
@@ -166,7 +170,11 @@ class TestSampler(unittest.TestCase):
         exclude_matrix = np.tile(exclude, (10000, 1))
 
         k = 10
-        results = [batched_sample_with_negative(range_, exclude_matrix, k).tolist() for _ in range(10)]
+        results = [
+            negsampler.batched_sample_with_negative(
+                range_, exclude_matrix, k
+            ).tolist() for _ in range(10)
+        ]
         counter = collections.Counter()
         for result in results:
             counter.update(itertools.chain.from_iterable(result))

@@ -55,9 +55,4 @@ except ImportError as e:
 
     subprocess.run(['cargo', 'clean'], cwd=current_dir, env=env, check=True)
 
-from . import _rs_sampler
-from ._rs_sampler import *
-
-__doc__ = _rs_sampler.__doc__
-if hasattr(_rs_sampler, '__all__'):
-    __all__ = _rs_sampler.__all__
+_ensure_compile = 0
