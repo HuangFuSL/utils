@@ -148,7 +148,7 @@ def log_norm_pdf(
     raise ValueError(f"Sigma must be a scalar, vector, or matrix, but got shape {Sigma.shape}.")
 
 def norm_pdf(
-    x: torch.Tensor, mean: torch.Tensor, Sigma: torch.Tensor | None = None, 
+    x: torch.Tensor, mean: torch.Tensor, Sigma: torch.Tensor | None = None,
     logSigma: torch.Tensor | None = None
 ) -> torch.Tensor:
     """
@@ -189,6 +189,16 @@ def rbf_kernel(
 ):
     '''
     Compute the Radial Basis Function (RBF) kernel between two sets of tensors.
+
+    The RBF kernel is given by:
+
+    .. math::
+        K(x, y) = \\exp(-\\gamma ||x - y||^2)
+
+    or equivalently,
+
+    .. math::
+        K(x, y) = \\exp\\left(-\\frac{||x - y||^2}{2 \\sigma^2}\\right)
 
     Args:
         x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
@@ -255,6 +265,11 @@ def mmd_distance(
     """
     Compute the Maximum Mean Discrepancy (MMD) distance between two sets of tensors.
 
+    The MMD distance is given by:
+
+    .. math::
+        \\text{MMD}(x, y) = K(x, x) - 2 K(x, y) + K(y, y)
+
     Args:
         x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
         y (torch.Tensor): Second tensor, shape (M, D), where M is the number of samples and D is the number of features.
@@ -280,6 +295,11 @@ def wasserstein_distance(
 ) -> torch.Tensor:
     """
     Compute the Wasserstein distance between two sets of tensors using the Sinkhorn algorithm.
+
+    The Wasserstein distance is given by:
+
+    .. math::
+        W_p(x, y) = \\left( \\inf_{\\gamma \\in \\Gamma(x, y)} \\int ||x - y||^p d\\gamma(x, y) \\right)^{1/p}
 
     Args:
         x (torch.Tensor): First tensor, shape (N, D), where N is the number of samples and D is the number of features.
