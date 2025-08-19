@@ -190,6 +190,53 @@ class DNN(Module):
             y = y + x
         return y
 
+class SinusoidalTemporalEmbedding(Module):
+    '''
+    Implements sinusoidal positional embedding proposed in "Attention is All You Need".
+
+    .. math::
+
+        PE_{(batch, pos, i)} = \\left\\{\\begin{aligned}
+        &\\sin\\left(\\frac{pos}{10000^{2k/d_{model}}}\\right) &\\text{if } i = 2k \\\\
+        &\\cos\\left(\\frac{pos}{10000^{2k/d_{model}}}\\right) &\\text{if } i = 2k + 1
+        \\end{aligned}\\right.
+
+    Args:
+        embedding_dim (int): The dimension of the embedding space.
+        denom (float): The denominator (10000.0) for the positional encoding.
+
+    Shapes:
+
+        * Input shape: (\\*, embedding_dim)
+        * Output shape: (\\*, embedding_dim)
+    '''
+    def __init__(self, embedding_dim: int, denom: float = 10000.0):
+        super().__init__()
+        if embedding_dim <= 0:
+            raise ValueError("embedding_dim must be positive")
+        if embedding_dim % 2 != 0:
+            raise ValueError("embedding_dim must be even")
+
+        self.embedding_dim = embedding_dim
+        expon = torch.arange(0, embedding_dim, 2).float() / embedding_dim
+        self.register_buffer('scale', torch.exp(-torch.log(torch.tensor(denom)) * expon))
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the circular temporal embedding.
+
+        Args:
+            t (torch.Tensor): Time record tensor of shape (\\*).
+
+        Returns:
+            torch.Tensor: Embedding of shape (\\*, embedding_dim).
+        '''
+        return torch.stack([
+            torch.sin(torch.einsum('...,k->...k', t, self.scale)),
+            torch.cos(torch.einsum('...,k->...k', t, self.scale)),
+        ], dim=-1).view(*t.shape, self.embedding_dim)
+
+
 class DeEmbedding(Module):
     def __init__(self, embedding: torch.nn.Embedding):
         '''

@@ -73,6 +73,42 @@ class TestActivation(unittest.TestCase):
     def test_softmax(self):
         activation = Activation('softmax', dim=1)
         self.assertTrue(torch.allclose(activation(self.x), torch.softmax(self.x, dim=1)))
+class TestTemporalEmbedding(unittest.TestCase):
+    def test_sinusoidal_temporal_embedding(self):
+        import numpy as np
+        class PositionalEncoding(torch.nn.Module):
+
+            def __init__(self, d_hid, n_position=200):
+                super(PositionalEncoding, self).__init__()
+
+                # Not a parameter
+                self.register_buffer('pos_table', self._get_sinusoid_encoding_table(n_position, d_hid))
+
+            def _get_sinusoid_encoding_table(self, n_position, d_hid):
+                ''' Sinusoid position encoding table '''
+                # TODO: make it with torch instead of numpy
+
+                def get_position_angle_vec(position):
+                    return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
+
+                sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(n_position)])
+                sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+                sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+                return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+            def forward(self, x):
+                return x + self.pos_table[:, :x.size(1)].clone().detach() # type: ignore
+
+        teacher = PositionalEncoding(128, 200)
+        student = SinusoidalTemporalEmbedding(128)
+        x_tensor = torch.randn(10, 200, 128)
+        input_tensor = torch.arange(0, 200).unsqueeze(0).expand(10, -1).float() # Batch size of 10
+        self.assertTrue(torch.allclose(
+            teacher(x_tensor) - x_tensor,
+            student(input_tensor), atol=1e-4, rtol=1e-6
+        ))
+
 class TestFeatureEmbedding(unittest.TestCase):
     def test_feature_embedding_uniform(self):
         feature_sizes = [3, 4, 5]
