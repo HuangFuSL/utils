@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from ctorch.nn import Module, GradientReversalLayer, Activation
+from ctorch.nn import *
 
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -73,3 +73,33 @@ class TestActivation(unittest.TestCase):
     def test_softmax(self):
         activation = Activation('softmax', dim=1)
         self.assertTrue(torch.allclose(activation(self.x), torch.softmax(self.x, dim=1)))
+class TestFeatureEmbedding(unittest.TestCase):
+    def test_feature_embedding_uniform(self):
+        feature_sizes = [3, 4, 5]
+        embedding_dim = 6
+        batch_size = 10
+        embedding = FeatureEmbedding(feature_sizes, embedding_dim)
+
+        x = torch.randint(0, 2, (batch_size, len(feature_sizes)))
+        output = embedding(x)
+        self.assertEqual(output.shape, (batch_size, len(feature_sizes) * embedding_dim))
+
+    def test_feature_embedding_different_dims(self):
+        feature_sizes = [3, 4, 5]
+        embedding_dims = [2, 3, 4]
+        batch_size = 10
+        embedding = FeatureEmbedding(feature_sizes, embedding_dims)
+
+        x = torch.randint(0, 2, (batch_size, len(feature_sizes)))
+        output = embedding(x)
+        self.assertEqual(output.shape, (batch_size, sum(embedding_dims)))
+
+    def test_out_of_bound_error(self):
+        feature_sizes = [3, 4, 5]
+        embedding_dim = 6
+        batch_size = 10
+        embedding = FeatureEmbedding(feature_sizes, embedding_dim)
+
+        x = torch.arange(batch_size).unsqueeze(1).expand(-1, len(feature_sizes))
+        with self.assertRaises(ValueError):
+            _ = embedding(x)
