@@ -15,10 +15,14 @@ def fit_expon(data: np.ndarray, lambda_: float = 1) -> Tuple[float, float, float
     return intercept, slope, r_value # type: ignore
 
 
-def hawkes(t, h, mu, a, b):
-    return mu + np.sum(a * np.exp(-b * (t - h[t >= h])))
-
 class TestPointProcess(unittest.TestCase):
+    def setUp(self):
+        self.mu = 1
+        self.alpha = 1
+        self.beta = 1
+
+        self.hawkes = point_process.HawkesIntensity(self.mu, self.alpha, self.beta)
+
     def test_poisson(self):
         lambda_ = 1
         t_start = 0
@@ -32,18 +36,16 @@ class TestPointProcess(unittest.TestCase):
         self.assertGreater(r ** 2, 0.95)  # type: ignore
 
     def test_ogata_thinning(self):
-        a = 0.8
-        b = 0.8
-        mu = 0.5
-        lambda_ = lambda t, h: hawkes(t, h, mu, a, b)
-        lambda_ub = 120
+        lambda_ub = 300
 
         t_start = 0
         t_end = 100
 
-        event_times = point_process.ogata_thinning(lambda_, lambda_ub, t_start, t_end)
+        event_times = point_process.ogata_thinning(
+            self.hawkes.lambda_, lambda_ub, t_start, t_end
+        )
         deltas = np.diff(point_process.integrated_intensity(
-            lambda_, event_times
+            self.hawkes.lambda_, event_times, n_points=50
         ))
 
         i, s, r = fit_expon(deltas)
@@ -52,22 +54,14 @@ class TestPointProcess(unittest.TestCase):
         self.assertGreater(r ** 2, 0.95)
 
     def test_ogata_thinning_adaptive(self):
-        a = 0.8
-        b = 0.8
-        mu = 0.5
-        lambda_ = lambda t, h: hawkes(t, h, mu, a, b)
-        hawkes_lambda_ub = lambda t, h: (hawkes(
-            t, h, mu, a, b
-        ), t + 5)
-
         t_start = 0
         t_end = 100
 
         event_times = point_process.ogata_thinning_adaptive(
-            lambda_, hawkes_lambda_ub, t_start, t_end
+            self.hawkes.lambda_, self.hawkes.lambda_upperbound, t_start, t_end
         )
         deltas = np.diff(point_process.integrated_intensity(
-            lambda_, event_times
+            self.hawkes.lambda_, event_times, n_points=50
         ))
         i, s, r = fit_expon(deltas)
         self.assertAlmostEqual(i, 0, places=1)
