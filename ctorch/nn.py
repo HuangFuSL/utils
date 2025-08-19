@@ -5,7 +5,7 @@ Originally in ctorch.py
 '''
 
 
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Callable, List
 import torch
 import warnings
 
@@ -110,6 +110,7 @@ class DNN(Module):
 
     Args:
         layer_dims (\\*int): The dimensions of each layer in the network, including input and output dimensions.
+        layer_type (Type[torch.nn.Module]): The type of layer to use (e.g., Linear).
         flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
         batchnorm (bool): Whether to apply batch normalization after each linear layer.
         bias (bool): Whether to include a bias term in the linear layers.
@@ -124,6 +125,7 @@ class DNN(Module):
     '''
     def __init__(
         self, *layer_dims: int,
+        layer_type: Callable[[int, int, bool], torch.nn.Module] = torch.nn.Linear,
         flip_gradient: bool = False,
         batchnorm: bool = False,
         bias: bool = True,
@@ -159,7 +161,7 @@ class DNN(Module):
             self.rev = torch.nn.Identity()
         for i, (in_dim, out_dim) in enumerate(zip(in_dims, out_dims)):
             current_layer = []
-            current_layer.append(torch.nn.Linear(in_dim, out_dim, bias=bias))
+            current_layer.append(layer_type(in_dim, out_dim, bias=bias))
             if batchnorm:
                 current_layer.append(torch.nn.BatchNorm1d(out_dim))
             if activation is not None:
@@ -189,6 +191,70 @@ class DNN(Module):
         if self.residual:
             y = y + x
         return y
+
+class MonotonicLinear(Module):
+    '''
+    Implements a monotonic linear layer. The monotonicity is enforced by applying a non-negative activation function to the weights.
+
+    Args:
+        in_features (int): Number of input features.
+        out_features (int): Number of output features.
+        bias (bool): Whether to include a bias term.
+        non_neg_func (str | Callable): Element-wise non-negative activation function to use. Should be one of:
+
+            * ``relu``: :math:`f(x) = \\max(0, x)`
+            * ``softplus``: :math:`f(x) = \\log(1 + \\exp(x))`
+            * ``sigmoid``: :math:`f(x) = \\frac{1}{1 + \\exp(-x)}`
+            * ``elu``: :math:`f(x) = ELU(x) + 1`
+            * ``abs``: :math:`f(x) = |x|`
+            * ``square``: :math:`f(x) = x^2`
+            * ``exp``: :math:`f(x) = e^x`
+
+    To keep the monotonicity, non-monotonic activations including ``softmax``, ``GELU``, ``SiLU`` and ``Mish`` should not be used. Normalization techniques such as layer normalization or batch normalization should also be avoided.
+
+    Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features)
+    '''
+    def __init__(
+        self, in_features: int, out_features: int, bias: bool = True,
+        non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus'
+    ):
+        super().__init__()
+        if not isinstance(non_neg_func, str):
+            self.non_neg_act = non_neg_func
+        elif non_neg_func in { 'relu', 'softplus', 'sigmoid' }:
+            self.non_neg_act = getattr(torch.nn.functional, non_neg_func)
+        elif non_neg_func == 'elu':
+            self.non_neg_act = lambda x: torch.nn.functional.elu(x) + 1
+        elif non_neg_func in { 'abs', 'square', 'exp' }:
+            self.non_neg_act = getattr(torch, non_neg_func)
+        else:
+            raise ValueError(f'A non-negative activation should be used to clip weights, got {non_neg_func}.')
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(torch.randn(out_features, in_features))
+
+        if bias:
+            self.bias = torch.nn.Parameter(torch.zeros(out_features))
+        else:
+            self.bias = torch.nn.Parameter(torch.zeros(out_features), requires_grad=False)
+
+        torch.nn.init.xavier_normal_(self.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the monotonic linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (\\*, out_features).
+        '''
+        return torch.einsum('...i,ji->...j', x, self.non_neg_act(self.weight)) + self.bias
 
 class SinusoidalTemporalEmbedding(Module):
     '''

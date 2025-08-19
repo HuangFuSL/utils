@@ -73,6 +73,18 @@ class TestActivation(unittest.TestCase):
     def test_softmax(self):
         activation = Activation('softmax', dim=1)
         self.assertTrue(torch.allclose(activation(self.x), torch.softmax(self.x, dim=1)))
+
+
+class TestMonotonicLinear(unittest.TestCase):
+    def test_monotonic_linear(self):
+        for func in {'relu', 'softplus', 'sigmoid', 'elu', 'abs', 'square'}:
+            with self.subTest(func=func):
+                layer = MonotonicLinear(10, 5, non_neg_func=func)
+                x = torch.rand(10, 10)
+                x_2 = torch.rand(10, 10) + 2
+                output = layer(x_2) - layer(x)
+                self.assertTrue(torch.all(output >= 0), "Output should be non-decreasing with respect to input.")
+
 class TestTemporalEmbedding(unittest.TestCase):
     def test_sinusoidal_temporal_embedding(self):
         import numpy as np
