@@ -86,6 +86,49 @@ class TestMonotonicLinear(unittest.TestCase):
                 self.assertTrue(torch.all(output >= 0), "Output should be non-decreasing with respect to input.")
 
 class TestTemporalEmbedding(unittest.TestCase):
+    def test_rotary_temporal_embedding(self):
+        N, L, D = 128, 256, 128
+        x = torch.randn(N, L, D)
+        t = torch.arange(L, dtype=torch.float32).unsqueeze(0).expand(N, -1)
+        rotate_matrix = torch.zeros(L, D, D)
+        for i in range(L):
+            for j in range(D // 2):
+                angle = i / (10000 ** (2 * j / D))
+                mat = torch.view_as_real(torch.polar(
+                    torch.ones([1, 1]), torch.tensor([angle, angle + torch.pi / 2])
+                ))
+                rotate_matrix[i, 2 * j: 2 * j + 2, 2 * j: 2 * j + 2] = mat
+        x_applied = torch.einsum('bld,ldm->blm', x, rotate_matrix)
+
+        embedding = RotaryTemporalEmbedding(D)
+        x_embedded = embedding(t, x)
+        self.assertTrue(torch.allclose(x_applied, x_embedded, atol=1e-4, rtol=1e-6))
+
+    def test_rotary_temporal_embedding_coherence(self):
+        N, L, D = 128, 1024, 128
+        x_half = torch.randn(N, L, D, dtype=torch.float16)
+        x_full = x_half.clone().to(torch.float32)
+        t = torch.arange(L, dtype=torch.float32).unsqueeze(0).expand(N, -1)
+        embedding = RotaryTemporalEmbedding(D)
+        self.assertTrue(torch.allclose(
+            embedding(t, x_full),
+            embedding(t, x_half).to(torch.float32), atol=1e-4, rtol=1e-6
+        ))
+
+    def test_rotary_temporal_embedding_shift_invariant(self):
+        N, L, D = 128, 128, 128
+        x = torch.randn(N, L, D)
+        y = torch.randn(N, L, D)
+        t = torch.arange(L, dtype=torch.float32).unsqueeze(0).expand(N, -1)
+        embedding = RotaryTemporalEmbedding(D)
+
+        einsum = 'bmd,bnd->bmn'
+        score = torch.einsum(einsum, embedding(t, x), embedding(t, y))
+        score_shifted = torch.einsum(einsum, embedding(t + 10, x), embedding(t + 10, y))
+        self.assertTrue(torch.allclose(
+            score, score_shifted, atol=1e-4, rtol=1e-4
+        ))
+
     def test_sinusoidal_temporal_embedding(self):
         import numpy as np
         class PositionalEncoding(torch.nn.Module):
