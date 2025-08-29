@@ -161,7 +161,7 @@ class DNN(Module):
             self.rev = torch.nn.Identity()
         for i, (in_dim, out_dim) in enumerate(zip(in_dims, out_dims)):
             current_layer = []
-            current_layer.append(layer_type(in_dim, out_dim, bias=bias))
+            current_layer.append(layer_type(in_dim, out_dim, bias))
             if batchnorm:
                 current_layer.append(torch.nn.BatchNorm1d(out_dim))
             if activation is not None:
