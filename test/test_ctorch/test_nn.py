@@ -85,6 +85,19 @@ class TestMonotonicLinear(unittest.TestCase):
                 output = layer(x_2) - layer(x)
                 self.assertTrue(torch.all(output >= 0), "Output should be non-decreasing with respect to input.")
 
+class TestNoisyLinear(unittest.TestCase):
+    def test_independent_noisy_linear(self):
+        layer = IndependentNoisyLinear(10, 5)
+        x = torch.randn(10, 10)
+        output = layer(x)
+        self.assertEqual(output.shape, (10, 5))
+
+    def test_factorized_noisy_linear(self):
+        layer = FactorizedNoisyLinear(10, 5)
+        x = torch.randn(10, 10)
+        output = layer(x)
+        self.assertEqual(output.shape, (10, 5))
+
 class TestTemporalEmbedding(unittest.TestCase):
     def test_rotary_temporal_embedding(self):
         N, L, D = 128, 256, 128

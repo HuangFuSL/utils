@@ -256,6 +256,169 @@ class MonotonicLinear(Module):
         '''
         return torch.einsum('...i,ji->...j', x, self.non_neg_act(self.weight)) + self.bias
 
+class IndependentNoisyLinear(Module):
+    '''
+    Implements a noisy linear layer according to https://arxiv.org/abs/1706.10295
+
+    The layer works the same way as a standard linear layer, but with added noise during training.
+
+    .. math::
+        \\begin{aligned}
+            w &= w_\\mu + w_\\sigma \\odot \\varepsilon \\\\
+            b &= b_\\mu + b_\\sigma \\odot \\varepsilon
+        \\end{aligned}
+
+    The parameters are initialized as:
+
+    .. math::
+        \\begin{aligned}
+            w_\\mu, b_\\mu &\\sim \\mathcal U(-1 / \\sqrt{d_{\\text{in}}}), 1 / \\sqrt{d_{\\text{int}}}) \\\\
+            w_\\sigma, b_\\sigma &= \\sigma_{\\text{init}}
+        \\end{aligned}
+
+    Args:
+        in_features (int): Number of input features.
+        out_features (int): Number of output features.
+        bias (bool): Whether to include a bias term.
+        init_sigma: (float): The initial sigma coefficient :math:`\\sigma_{\\text{init}}`, default is 0.017.
+
+    Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features)
+    '''
+    def __init__(
+        self, in_features: int, out_features: int, bias: bool = True,
+        init_sigma: float = 0.017
+    ):
+        super().__init__()
+        sigma = init_sigma
+        bound = 1 / in_features ** 0.5
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.bias = bias
+        self.weight_mu = torch.nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_sigma = torch.nn.Parameter(torch.full((out_features, in_features), sigma))
+        torch.nn.init.uniform_(self.weight_mu, -bound, bound)
+
+        if self.bias:
+            self.bias_mu = torch.nn.Parameter(torch.empty(out_features))
+            self.bias_sigma = torch.nn.Parameter(torch.full((out_features,), sigma))
+            torch.nn.init.uniform_(self.bias_mu, -bound, bound)
+        else:
+            self.register_parameter('bias_mu', None)
+            self.register_parameter('bias_sigma', None)
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the noisy linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (\\*, out_features).
+        '''
+        if self.training:
+            weight_z = torch.randn_like(self.weight_sigma)
+            weight = self.weight_mu + weight_z * self.weight_sigma
+            if self.bias:
+                bias_z = torch.randn_like(self.bias_sigma)
+                bias = self.bias_mu + self.bias_sigma * bias_z
+            else:
+                bias = None
+        else:
+            weight = self.weight_mu
+            bias = self.bias_mu
+        return torch.nn.functional.linear(x, weight, bias)
+
+class FactorizedNoisyLinear(Module):
+    '''
+    Implements a noisy linear layer according to https://arxiv.org/abs/1706.10295
+
+    The layer works the same way as a standard linear layer, but with added noise during training.
+
+    .. math::
+        \\begin{aligned}
+            z_\\text{in} &\\sim \\mathcal N(0, I_{d_{\\text{in}}}) \\\\
+            z_\\text{out} &\\sim \\mathcal N(0, I_{d_{\\text{out}}}) \\\\
+            f(x) &= \\text{sign}(x) \\odot \\sqrt{|x|} \\\\
+            w &= w_\\mu + w_\\sigma \\odot (f(z_\\text{in}) f(z_\\text{out})^\\top) \\\\
+            b &= b_\\mu + b_\\sigma \\odot f(z_\\text{out})
+        \\end{aligned}
+
+    The parameters are initialized as:
+
+    .. math::
+        \\begin{aligned}
+            w_\\mu, b_\\mu &\\sim \\mathcal U(-1 / \\sqrt{d_{\\text{in}}}), 1 / \\sqrt{d_{\\text{int}}}) \\\\
+            w_\\sigma, b_\\sigma &= \\sigma_{\\text{init}} / \\sqrt{d_{\\text{in}}}
+        \\end{aligned}
+
+    Args:
+        in_features (int): Number of input features.
+        out_features (int): Number of output features.
+        bias (bool): Whether to include a bias term.
+        init_sigma: (float): The initial sigma coefficient :math:`\\sigma_{\\text{init}}`, default is 0.5.
+
+    Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features)
+    '''
+    def __init__(
+        self, in_features: int, out_features: int, bias: bool = True,
+        init_sigma: float = 0.5
+    ):
+        super().__init__()
+        sigma = init_sigma * in_features ** -0.5
+        bound = 1 / in_features ** 0.5
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.bias = bias
+        self.weight_mu = torch.nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_sigma = torch.nn.Parameter(torch.full((out_features, in_features), sigma))
+        torch.nn.init.uniform_(self.weight_mu, -bound, bound)
+
+        if self.bias:
+            self.bias_mu = torch.nn.Parameter(torch.empty(out_features))
+            self.bias_sigma = torch.nn.Parameter(torch.full((out_features,), sigma))
+            torch.nn.init.uniform_(self.bias_mu, -bound, bound)
+        else:
+            self.register_parameter('bias_mu', None)
+            self.register_parameter('bias_sigma', None)
+
+    @staticmethod
+    def f(x: torch.Tensor) -> torch.Tensor:
+        return torch.sign(x) * torch.sqrt(torch.abs(x))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the noisy linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (\\*, out_features).
+        '''
+        if self.training:
+            out_z = self.f(self.weight_mu.new_empty(self.out_features).normal_())
+            in_z = self.f(out_z.new_empty(self.in_features).normal_())
+            weight_z = torch.outer(out_z, in_z)
+            weight = self.weight_mu + weight_z * self.weight_sigma
+            if self.bias:
+                bias = self.bias_mu + self.bias_sigma * out_z
+            else:
+                bias = None
+        else:
+            weight = self.weight_mu
+            bias = self.bias_mu
+        return torch.nn.functional.linear(x, weight, bias)
+
 class RotaryTemporalEmbedding(Module):
     '''
     Implements rotary positional embedding proposed in "RoFormer: Enhanced Transformer with Rotary Position Embedding" (https://arxiv.org/abs/2104.09864).
