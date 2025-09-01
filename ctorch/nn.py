@@ -386,7 +386,7 @@ class FactorizedNoisyLinear(Module):
         if self.bias:
             self.bias_mu = torch.nn.Parameter(torch.empty(out_features))
             self.bias_sigma = torch.nn.Parameter(torch.full((out_features,), sigma))
-            torch.nn.init.uniform_(self.bias_mu, -bound, bound)
+            torch.nn.init.zeros_(self.bias_mu)
         else:
             self.register_parameter('bias_mu', None)
             self.register_parameter('bias_sigma', None)
