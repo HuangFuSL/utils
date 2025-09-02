@@ -4,8 +4,10 @@ rl.py - Utilities Components for Reinforcement Learning
 from __future__ import annotations
 
 import abc
-from typing import Tuple
+import functools
+from typing import Any, Dict, Tuple
 
+import gymnasium
 import torch
 
 from . import nn
@@ -349,3 +351,100 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
             return self.Q(state)
         action = action.to(torch.long)
         return self.action_Q(state, action)
+
+def torch_step(env: gymnasium.Env):
+    '''
+    A wrapper for the environment step function to convert actions from torch tensors and results to torch tensors.
+
+    Args:
+        env (gymnasium.Env): The environment to wrap.
+
+    Returns:
+        Callable[[torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]]: The wrapped ``env.step`` function.
+    '''
+    @functools.wraps(env.step)
+    def _wrapper(action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
+        action_np = action.numpy(force=True).astype(env.action_space.dtype)
+        *ret, info = env.step(action_np)
+        return [torch.as_tensor(r).float() for r in ret] + [info] # type: ignore
+    return _wrapper
+
+def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_steps: int | None = None):
+    '''
+    Simulates a single episode in the environment using the given model.
+
+    Args:
+        env (gymnasium.Env): The environment to simulate.
+        model (BaseRLModel): The RL model to use for action selection.
+        eps (float): The exploration rate.
+        max_episode_steps (int | None): The maximum number of steps in the episode.
+
+    Returns:
+        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d)` tuple, and the overall reward.
+    '''
+    # Parse env
+    s_shape = env.observation_space.shape
+    a_shape = env.action_space.shape
+    a_dtype = env.action_space.dtype
+    if max_episode_steps is None:
+        max_len = env._max_episode_steps # type: ignore
+    else:
+        max_len = max_episode_steps
+    if s_shape is None:
+        raise ValueError('State shape is None.')
+    if a_shape is None:
+        raise ValueError('Action shape is None.')
+    if a_dtype is None:
+        raise ValueError('Action dtype is None.')
+
+    result_s = torch.zeros(max_len, 2, *s_shape, dtype=torch.float)
+    result_a = torch.zeros(max_len, *a_shape, dtype=torch.float)
+    result_r = torch.zeros(max_len, dtype=torch.float)
+    result_d = torch.zeros(max_len, dtype=torch.float)
+
+    rewards = 0.0
+    steps = 0
+
+    model.to('cpu')
+    step_fn = torch_step(env)
+    state, _ = env.reset()
+    state = torch.as_tensor(state).float()
+    while True:
+        action = model.act(state, eps=eps)
+        next_state, reward, done, time_exceed, _ = step_fn(action)
+        rewards += reward.item()
+
+        result_s[steps, 0] = state
+        result_a[steps] = action.unsqueeze(0)
+        result_r[steps] = reward.unsqueeze(0)
+        result_s[steps, 1] = next_state
+        result_d[steps] = done.unsqueeze(0)
+
+        steps += 1
+        state = next_state
+
+        if torch.any(done + time_exceed) or steps >= max_len:
+            break
+
+    s, a, r, s_prime, d = (
+        result_s[:steps, 0],  # state
+        result_a[:steps], # action
+        result_r[:steps], # reward
+        result_s[:steps, 1], # next_state
+        result_d[:steps] # done
+    )
+
+    if model.tau > 1:
+        gamma = model.gamma
+        kernel = torch.tensor(gamma).pow(
+            torch.arange(model.tau, dtype=torch.float))
+
+        r = r.reshape(1, 1, -1)
+        kernel = kernel.reshape(1, 1, -1)
+        r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1) / model.tau
+        ret_length = r_conv.shape[0]
+        return [
+            s[:ret_length], a[:ret_length],
+            r_conv, s_prime[model.tau - 1:], d[model.tau - 1:]
+        ], rewards
+    return [s, a, r, s_prime, d], rewards
