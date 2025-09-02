@@ -11,3 +11,4 @@ sphinxcontrib-serializinghtml==2.0.0
 
 
 numpy
+gymnasium
