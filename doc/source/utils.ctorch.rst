@@ -52,3 +52,11 @@ Utilities for Variable Length Sequences
    :members:
    :show-inheritance:
    :undoc-members:
+
+Utilities for Reinforcement Learning
+-------------------------------------
+
+.. automodule:: utils.ctorch.rl
+   :members:
+   :show-inheritance:
+   :undoc-members:
