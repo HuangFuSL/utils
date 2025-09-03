@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import abc
 import functools
-from typing import Any, Dict, List, MutableMapping, Tuple
+from typing import Any, Callable, Dict, List, MutableMapping, Tuple
 
 import gymnasium
 import torch
@@ -566,7 +566,7 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
         action = action.to(torch.long)
         return self.action_Q(state, action)
 
-def torch_step(env: gymnasium.Env):
+def torch_step(env: gymnasium.Env, device: torch.device | str = 'cpu'):
     '''
     A wrapper for the environment step function to convert actions from torch tensors and results to torch tensors.
 
@@ -580,10 +580,31 @@ def torch_step(env: gymnasium.Env):
     def _wrapper(action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
         action_np = action.numpy(force=True).astype(env.action_space.dtype)
         *ret, info = env.step(action_np)
-        return [torch.as_tensor(r).float() for r in ret] + [info] # type: ignore
+        return [torch.as_tensor(r, device=device).float() for r in ret] + [info] # type: ignore
     return _wrapper
 
-def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_steps: int | None = None):
+def _default_shape(
+    s: torch.Tensor, a: torch.Tensor,
+    r: torch.Tensor, s_prime: torch.Tensor,
+    term: torch.Tensor, trunc: torch.Tensor
+) -> torch.Tensor:
+    return r
+
+RewardMapping = Callable[
+    [
+        torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor
+    ], torch.Tensor
+]
+
+
+@torch.inference_mode()
+def run_episode(
+    env: gymnasium.Env, model: BaseRLModel, eps: float,
+    max_episode_steps: int | None = None,
+    reward_shape: RewardMapping = _default_shape
+):
     '''
     Simulates a single episode in the environment using the given model.
 
@@ -592,9 +613,10 @@ def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_
         model (BaseRLModel): The RL model to use for action selection.
         eps (float): The exploration rate.
         max_episode_steps (int | None): The maximum number of steps in the episode.
+        reward_shape (Callable[[s, a, r, s_prime, terminated, truncated], torch.Tensor]): A function to adjust the reward based on the current reward, arrived state, terminal state, and time limit truncation. Returns the adjusted reward to be passed to the model.
 
     Returns:
-        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d)` tuple, and the overall reward.
+        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d)` tuple, and the overall *raw* reward.
     '''
     # Parse env
     s_shape = env.observation_space.shape
@@ -611,22 +633,26 @@ def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_
     if a_dtype is None:
         raise ValueError('Action dtype is None.')
 
-    result_s = torch.zeros(max_len, 2, *s_shape, dtype=torch.float)
-    result_a = torch.zeros(max_len, *a_shape, dtype=torch.float)
-    result_r = torch.zeros(max_len, dtype=torch.float)
-    result_d = torch.zeros(max_len, dtype=torch.float)
+    device = model.device
+    pin_memory = torch.cuda.is_available() and model.device.type == 'cuda'
+    result_s = torch.zeros(max_len, 2, *s_shape, dtype=torch.float, pin_memory=pin_memory)
+    result_a = torch.zeros(max_len, *a_shape, dtype=torch.float, pin_memory=pin_memory)
+    result_r = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
+    result_d = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
 
-    rewards = 0.0
+    rewards = torch.tensor(0.0, device='cpu')
     steps = 0
 
-    model.to('cpu')
     step_fn = torch_step(env)
     state, _ = env.reset()
-    state = torch.as_tensor(state).float()
+    state = torch.as_tensor(state, device='cpu').float()
+    if pin_memory:
+        state = state.pin_memory()
     while True:
-        action = model.act(state, eps=eps)
+        action = model.act(state.to(device), eps=eps).detach().to('cpu', non_blocking=True)
         next_state, reward, done, time_exceed, _ = step_fn(action)
-        rewards += reward.item()
+        rewards += reward
+        reward = reward_shape(state, action, reward, next_state, done, time_exceed)
 
         result_s[steps, 0] = state
         result_a[steps] = action.unsqueeze(0)
@@ -640,18 +666,19 @@ def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_
         if torch.any(done + time_exceed) or steps >= max_len:
             break
 
-    s, a, r, s_prime, d = (
+    s, a, r, s_prime, d = map(lambda x: x.to(device), [
         result_s[:steps, 0],  # state
         result_a[:steps], # action
         result_r[:steps], # reward
         result_s[:steps, 1], # next_state
         result_d[:steps] # done
-    )
+    ])
 
     if model.tau > 1:
         gamma = model.gamma
-        kernel = torch.tensor(gamma).pow(
-            torch.arange(model.tau, dtype=torch.float))
+        kernel = torch.tensor(gamma, device=device).pow(
+            torch.arange(model.tau, dtype=torch.float, device=device)
+        )
 
         r = r.reshape(1, 1, -1)
         kernel = kernel.reshape(1, 1, -1)
@@ -660,5 +687,5 @@ def run_episode(env: gymnasium.Env, model: BaseRLModel, eps: float, max_episode_
         return [
             s[:ret_length], a[:ret_length],
             r_conv, s_prime[model.tau - 1:], d[model.tau - 1:]
-        ], rewards
-    return [s, a, r, s_prime, d], rewards
+        ], rewards.item()
+    return [s, a, r, s_prime, d], rewards.item()
