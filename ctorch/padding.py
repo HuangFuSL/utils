@@ -13,7 +13,11 @@ import torch
 PackedSequence = torch.nn.utils.rnn.PackedSequence
 PackedOrTensor = TypeVar('PackedOrTensor', torch.Tensor, PackedSequence)
 
-def masked_select(values_input: PackedOrTensor, mask_input: PackedOrTensor) -> PackedSequence:
+
+def masked_select(
+    values_input: PackedOrTensor | torch.Tensor,
+    mask_input: PackedOrTensor | torch.Tensor
+) -> PackedSequence:
     '''
     Perform masked selection of variable length on a PackedSequence or a regular tensor.
 
