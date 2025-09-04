@@ -13,6 +13,100 @@ import torch
 PackedSequence = torch.nn.utils.rnn.PackedSequence
 PackedOrTensor = TypeVar('PackedOrTensor', torch.Tensor, PackedSequence)
 
+def masked_select(values_input: PackedOrTensor, mask_input: PackedOrTensor) -> PackedSequence:
+    '''
+    Perform masked selection of variable length on a PackedSequence or a regular tensor.
+
+    Args:
+        values_input (PackedOrTensor): The input values to select from.
+        mask_input (PackedOrTensor): The mask indicating which values to select.
+
+    Returns:
+        PackedSequence: A PackedSequence containing only the selected values.
+
+    Example:
+
+        .. code-block:: python
+
+            from torch.nn.utils.rnn import pad_packed_sequence
+            values_list = [
+                [[1., 10.], [2., 20.], [3., 30.]],
+                [[4., 40.], [5., 50.], [0.,  0.]],
+            ]
+            mask_list = [
+                [True, False, True],
+                [False, True, False],
+            ]
+
+            values = torch.tensor(values_list, dtype=torch.float32)
+            mask = torch.tensor(mask_list, dtype=torch.bool)
+
+            out = masked_select(values, mask)
+            out_padded, out_len = pad_packed_sequence(out, batch_first=True)
+
+            assert out_padded.tolist() == [
+                [[1.0, 10.0], [3.0, 30.0]],
+                [[5.0, 50.0], [0.0,  0.0]],
+            ]
+            assert out_len.tolist() == [2, 1]
+    '''
+    # Sanity checks
+    # Pad value sequences and check shape
+    if isinstance(values_input, PackedSequence):
+        values_padded, values_length = torch.nn.utils.rnn.pad_packed_sequence(
+            values_input, batch_first=True
+        )
+    else:
+        values_padded = values_input
+        values_length = torch.full((values_input.size(0),), values_input.size(1), dtype=torch.long)
+    if values_padded.dim() < 2:
+        raise ValueError('Values must be at least 2D tensor.')
+    B, L, *H = values_padded.shape
+
+    # Convert, pad mask sequences and check shape
+    mask_input = mask_input.to(torch.bool)
+    if isinstance(mask_input, PackedSequence):
+        mask_padded, _ = torch.nn.utils.rnn.pad_packed_sequence(
+            mask_input, batch_first=True, padding_value=False
+        )
+    else:
+        mask_padded = mask_input
+    if mask_padded.dim() != 2:
+        raise ValueError('Mask must be a 2D tensor.')
+    B_mask, L_mask = mask_padded.shape
+
+    # Batch size and device should match
+    if B_mask != B:
+        raise ValueError(f'Batch size of values ({B}) and mask ({B_mask}) must match.')
+    if mask_padded.device != values_padded.device:
+        raise ValueError('Values and mask must be on the same device.')
+
+    # Handle inconsistent sequence length
+    if L_mask > L:
+        mask_padded = mask_padded[:, :L]
+    elif L_mask < L:
+        mask_padded = torch.cat([mask_padded, mask_padded.new_zeros((B_mask, L - L_mask))], dim=1)
+    mask_padded &= (torch.arange(L) < values_length[:, None]).to(mask_padded.device)
+
+    # Handle empty sequences
+    selected_len = mask_padded.long().sum(dim=1)
+    if torch.any(selected_len <= 0):
+        raise ValueError('Some sequences have zero length after masking.')
+
+    # Allocate output tensors
+    out_len = int(selected_len.max().item())
+    out_padded = values_padded.new_zeros((B, out_len, *H))
+
+    new_positions = (mask_padded.long().cumsum(dim=1) - 1).clamp_min(0)
+    batch_idx, in_padded_idx = torch.nonzero(mask_padded, as_tuple=True)
+    out_padded_idx = new_positions[batch_idx, in_padded_idx]
+    out_padded[batch_idx, out_padded_idx] = values_padded[batch_idx, in_padded_idx]
+
+    out_packed = torch.nn.utils.rnn.pack_padded_sequence(
+        out_padded, lengths=selected_len.cpu(),
+        batch_first=True, enforce_sorted=False
+    )
+    return out_packed
 
 def packed_unary_op(
     func: Callable[[torch.Tensor], torch.Tensor], x: PackedOrTensor

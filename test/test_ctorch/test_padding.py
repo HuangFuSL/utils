@@ -129,3 +129,181 @@ class TestPackedOps(unittest.TestCase):
         )
         pad_then_apply = torch.cat((self.padded_a, self.padded_b), dim=-1)
         self.assertTrue(torch.allclose(apply_then_pad, pad_then_apply))
+
+class TestMaskedSelect(unittest.TestCase):
+    def test_basic_tensor_with_feature_dim(self):
+        values_list = [
+            [[1., 10.], [2., 20.], [3., 30.]],
+            [[4., 40.], [5., 50.], [0.,  0.]],
+        ]
+        mask_list = [
+            [True, False, True],
+            [False, True, False],
+        ]
+        values = torch.tensor(values_list, dtype=torch.float32)
+        mask = torch.tensor(mask_list, dtype=torch.bool)
+
+        out = masked_select(values, mask)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+
+        self.assertEqual(out_len.tolist(), [2, 1])
+        self.assertEqual(
+            out_padded.tolist(),
+            [
+                [[1.0, 10.0], [3.0, 30.0]],
+                [[5.0, 50.0], [0.0,  0.0]],
+            ]
+        )
+
+    def test_basic_tensor_no_feature_dim(self):
+        # values: (B, L)
+        values = torch.tensor([
+            [1., 2., 3., 4.],
+            [5., 6., 7., 8.],
+        ], dtype=torch.float32)
+        mask = torch.tensor([
+            [True, False, True, False],
+            [False, True, False, True],
+        ], dtype=torch.bool)
+
+        out = masked_select(values, mask)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+
+        self.assertEqual(out_len.tolist(), [2, 2])
+        self.assertEqual(
+            out_padded.tolist(),
+            [
+                [1.0, 3.0],
+                [6.0, 8.0],
+            ]
+        )
+
+    def test_packed_inputs_both_packed(self):
+        values_padded = torch.tensor([
+            [[1., 10.], [2., 20.], [3., 30.], [4., 40.]],
+            [[5., 50.], [6., 60.], [0.,  0.], [0.,  0.]],
+        ], dtype=torch.float32)
+        lengths = torch.tensor([4, 2], dtype=torch.long)
+        values_packed = torch.nn.utils.rnn.pack_padded_sequence(values_padded, lengths, batch_first=True, enforce_sorted=False)
+
+        mask_padded = torch.tensor([
+            [True, True, False, False],
+            [True, False, False, False],
+        ], dtype=torch.bool)
+        mask_packed = torch.nn.utils.rnn.pack_padded_sequence(mask_padded, lengths, batch_first=True, enforce_sorted=False)
+
+        out = masked_select(values_packed, mask_packed)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+
+        self.assertEqual(out_len.tolist(), [2, 1])
+        self.assertEqual(
+            out_padded.tolist(),
+            [
+                [[1.0, 10.0], [2.0, 20.0]],
+                [[5.0, 50.0], [0.0,  0.0]],
+            ]
+        )
+
+    def test_mask_longer_than_values(self):
+        values = torch.tensor([
+            [1., 2., 3.],
+            [4., 5., 6.],
+        ], dtype=torch.float32)
+        mask = torch.tensor([
+            [True, False, True, True, True],
+            [False, False, True, False, False],
+        ], dtype=torch.bool)
+
+        out = masked_select(values, mask)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+
+        self.assertEqual(out_len.tolist(), [2, 1])
+        self.assertEqual(
+            out_padded.tolist(),
+            [
+                [1.0, 3.0],
+                [6.0, 0.0],
+            ]
+        )
+
+    def test_mask_shorter_than_values(self):
+        values = torch.tensor([
+            [[1., 10.], [2., 20.], [3., 30.], [4., 40.]],
+            [[5., 50.], [6., 60.], [7., 70.], [8., 80.]],
+        ], dtype=torch.float32)
+        mask = torch.tensor([
+            [False, True],
+            [True,  False],
+        ], dtype=torch.bool)
+
+        out = masked_select(values, mask)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+
+        self.assertEqual(out_len.tolist(), [1, 1])
+        self.assertEqual(
+            out_padded.tolist(),
+            [
+                [[2.0, 20.0]],
+                [[5.0, 50.0]],
+            ]
+        )
+
+    def test_raises_on_zero_length_after_mask(self):
+        values = torch.tensor([
+            [1., 2., 3.],
+            [4., 5., 6.],
+        ], dtype=torch.float32)
+        mask = torch.tensor([
+            [False, False, False],
+            [True,  False, False],
+        ], dtype=torch.bool)
+        with self.assertRaisesRegex(ValueError, 'zero length'):
+            _ = masked_select(values, mask)
+
+    def test_gradient_flow_tensor_input(self):
+        values = torch.tensor([
+            [1., 2., 3.],
+            [4., 5., 6.],
+        ], dtype=torch.float32, requires_grad=True)
+        mask = torch.tensor([
+            [True, False, True],
+            [False, True, False],
+        ], dtype=torch.bool)
+
+        out = masked_select(values, mask)
+        loss = out.data.sum()
+        loss.backward()
+
+        expected_grad = torch.tensor([
+            [1., 0., 1.],
+            [0., 1., 0.],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.allclose(values.grad, expected_grad))
+
+    def test_cross_device_optional(self):
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            return
+        values = torch.tensor([
+            [[1., 10.], [2., 20.], [3., 30.]],
+            [[4., 40.], [5., 50.], [0.,  0.]],
+        ], dtype=torch.float32, device=device)
+        mask = torch.tensor([
+            [True, False, True],
+            [False, True, False],
+        ], dtype=torch.bool, device=device)
+
+        out = masked_select(values, mask)
+        out_padded, out_len = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
+        self.assertEqual(out_len.tolist(), [2, 1])
+        self.assertTrue(out_padded.device.type == device)
+        self.assertEqual(
+            out_padded.cpu().tolist(),
+            [
+                [[1.0, 10.0], [3.0, 30.0]],
+                [[5.0, 50.0], [0.0,  0.0]],
+            ]
+        )
