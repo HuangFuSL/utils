@@ -18,10 +18,10 @@ def packed_unary_op(
     func: Callable[[torch.Tensor], torch.Tensor], x: PackedOrTensor
 ) -> PackedOrTensor:
     '''
-    Apply an unary element-wise function to a PackedSequence or a regular tensor.
+    Apply an unary sample-wise function to a PackedSequence or a regular tensor.
 
     Args:
-        func (Callable): An element-wise function to apply.
+        func (Callable): An sample-wise function to apply.
         x (PackedSequence | torch.Tensor): The input data, either a PackedSequence or a regular tensor.
 
     Returns:
@@ -59,8 +59,9 @@ def packed_binary_op(
         return op(a, b)
     if isinstance(a, PackedSequence) and isinstance(b, PackedSequence):
         for fieldname in ['batch_sizes', 'sorted_indices', 'unsorted_indices']:
-            if not (getattr(a, fieldname) is not None and getattr(b, fieldname) is not None) \
-                or (not torch.equal(getattr(a, fieldname), getattr(b, fieldname))):
+            if (getattr(a, fieldname) is not None and getattr(b, fieldname) is not None \
+                and not torch.equal(getattr(a, fieldname), getattr(b, fieldname))) \
+                or (getattr(a, fieldname) is None) ^ (getattr(b, fieldname) is None):
                     raise ValueError(
                         f"PackedSequences must have identical {fieldname}."
                     )
@@ -95,7 +96,7 @@ def packed_forward(
     Returns:
         PackedSequence | torch.Tensor: The output after applying the module. If the input is a PackedSequence, the output will also be a PackedSequence, otherwise it will be a regular tensor.
     '''
-    return packed_unary_op(module.forward, packed_input)
+    return packed_unary_op(module, packed_input)
 
 def packed_concat(
     packed_seq: List[PackedSequence], dim: int = -1
