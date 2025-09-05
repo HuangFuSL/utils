@@ -355,12 +355,12 @@ def packed_binary_op(
                         f"PackedSequences must have identical {fieldname}."
                     )
 
-        if a.data.shape != b.data.shape:
+        if a.data.shape[0] != b.data.shape[0]:
             raise ValueError(
                 f"PackedSequences must have identical data shapes: {a.data.shape} vs {b.data.shape}."
             )
         ret = op(a.data, b.data)
-        if ret.shape != a.data.shape:
+        if ret.shape[0] != a.data.shape[0]:
             raise ValueError(
                 f"Operation {op.__name__} changed the shape of the data from {a.data.shape} to {ret.shape}."
             )
