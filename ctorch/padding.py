@@ -13,6 +13,197 @@ import torch
 PackedSequence = torch.nn.utils.rnn.PackedSequence
 PackedOrTensor = TypeVar('PackedOrTensor', torch.Tensor, PackedSequence)
 
+def prepend_left(
+    input_tensor: PackedOrTensor, append_value: float | int = 0.0, num_steps: int = 1, batch_first: bool = True
+):
+    '''
+    Add ``num_steps`` steps at the beginning of the time axis, to a packed sequence or tensor.
+
+    Args:
+        input_tensor (PackedOrTensor): The input tensor or packed sequence to pad.
+        padding_value (float, optional): The value to use for padding. Defaults to 0.0.
+        num_steps (int, optional): The number of steps to add. Defaults to 1.
+        batch_first (bool, optional): If True, the input tensor is assumed to be in (batch, seq, ...) format, otherwise (seq, batch, ...), only effective when accepting tensors. Defaults to True.
+
+    Returns:
+        PackedOrTensor: The padded tensor or packed sequence.
+    '''
+    if num_steps < 0:
+        raise ValueError('num_steps must be non-negative.')
+    elif num_steps == 0:
+        return input_tensor
+
+    if isinstance(input_tensor, torch.Tensor):
+        if input_tensor.dim() < 2:
+            raise ValueError('Input tensor must have at least 2 dimensions.')
+
+        if not batch_first:
+            input_tensor = input_tensor.movedim(0, 1)
+        x = input_tensor.movedim(1, -1)
+        x = torch.nn.functional.pad(x, (num_steps, 0), value=append_value)
+        ret = x.movedim(-1, 1)
+
+        if not batch_first:
+            ret = ret.movedim(1, 0)
+        return ret
+    B = int(input_tensor.batch_sizes[0].item())
+    new_data = prepend_left(input_tensor.data.unsqueeze(0), append_value, num_steps * B).squeeze(0)
+    new_bs = prepend_left(input_tensor.batch_sizes.unsqueeze(0), B, num_steps).squeeze(0)
+    return input_tensor._replace(data=new_data, batch_sizes=new_bs)
+
+
+def append_right(
+    input_tensor: PackedOrTensor, append_value: float | int = 0.0, num_steps: int = 1, batch_first: bool = True
+):
+    '''
+    Add ``num_steps`` steps at the end of the time axis, to a packed sequence or tensor.
+
+    Args:
+        input_tensor (PackedOrTensor): The input tensor or packed sequence to pad.
+        padding_value (float, optional): The value to use for padding. Defaults to 0.0.
+        num_steps (int, optional): The number of steps to add. Defaults to 1.
+        batch_first (bool, optional): If True, the input tensor is assumed to be in (batch, seq, ...) format, otherwise (seq, batch, ...), only effective when accepting tensors. Defaults to True.
+
+    Returns:
+        PackedOrTensor: The padded tensor or packed sequence.
+    '''
+    if num_steps < 0:
+        raise ValueError('num_steps must be non-negative.')
+    elif num_steps == 0:
+        return input_tensor
+
+    if isinstance(input_tensor, torch.Tensor):
+        if input_tensor.dim() < 2:
+            raise ValueError('Input tensor must have at least 2 dimensions.')
+
+        if not batch_first:
+            input_tensor = input_tensor.movedim(0, 1)
+        x = input_tensor.movedim(1, -1)
+        x = torch.nn.functional.pad(x, (0, num_steps), value=append_value)
+        ret = x.movedim(-1, 1)
+
+        if not batch_first:
+            ret = ret.movedim(1, 0)
+        return ret
+
+    data, bs = input_tensor.data, input_tensor.batch_sizes
+    B = int(bs[0].item())
+    T = int(bs.numel())
+    D = data.shape[1:]
+
+    # Restore sequence lengths
+    arange_B = torch.arange(1, B + 1, device=bs.device)
+    lengths = (bs.unsqueeze(1) >= arange_B).sum(dim=0).to(torch.long)
+    # Prepend num_steps to the lengths
+    new_lengths = lengths + num_steps
+    T_new = int(new_lengths.max().item())
+    # And calculate new batch sizes
+    counts = torch.bincount(new_lengths, minlength=T_new + 1)
+    cumsum_rev = torch.cumsum(counts.flip(0), dim=0).flip(0)
+    new_bs = cumsum_rev[1:].to(bs.dtype)
+    # Allocate new data
+    new_data = input_tensor.data.new_full((int(new_bs.sum().item()), *D), append_value)
+    # And assign
+    old_off = 0
+    new_off = 0
+    for t in range(T):
+        bt = int(bs[t].item())
+        nb = int(new_bs[t].item())
+        new_data[new_off:new_off + bt] = input_tensor.data[old_off:old_off + bt]
+        old_off += bt
+        new_off += nb
+
+    return input_tensor._replace(data=new_data, batch_sizes=new_bs)
+
+
+def truncate_left(
+    input_tensor: PackedOrTensor, num_steps: int = 1, batch_first: bool = True,
+    strict: bool = True
+):
+    '''
+    Remove ``num_steps`` steps at the beginning of the time axis, from a packed sequence or tensor.
+
+    Args:
+        input_tensor (PackedOrTensor): The input tensor or packed sequence to truncate.
+        num_steps (int, optional): The number of steps to remove. Defaults to 1.
+        batch_first (bool, optional): If True, the input tensor is assumed to be in (batch, seq, ...) format, otherwise (seq, batch, ...), only effective when accepting tensors. Defaults to True.
+        strict (bool, optional): If True, raises an error if truncating action will yield an empty sequence.
+
+    Returns:
+        PackedOrTensor: The truncated tensor or packed sequence.
+    '''
+    if num_steps < 0:
+        raise ValueError('num_steps must be non-negative.')
+    elif num_steps == 0:
+        return input_tensor
+
+    if isinstance(input_tensor, torch.Tensor):
+        if batch_first:
+            return input_tensor[:, num_steps:, ...]
+        else:
+            return input_tensor[num_steps:, ...]
+
+    bs = input_tensor.batch_sizes
+    B = int(bs[0].item())
+    T = int(bs.numel())
+
+    if strict:
+        if T <= num_steps or bs[num_steps - 1] != B:
+            raise ValueError('num_steps larger than minimum sequence length.')
+    else:
+        if T <= num_steps:
+            raise ValueError('num_steps larger than sequence length.')
+
+    offset = int(bs[:num_steps].sum().item())
+    new_data = input_tensor.data[offset:]
+    new_bs = bs[num_steps:]
+    return input_tensor._replace(data=new_data, batch_sizes=new_bs)
+
+
+def truncate_right(
+    input_tensor: PackedOrTensor, num_steps: int = 1, batch_first: bool = True,
+    strict: bool = True
+):
+    '''
+    Remove ``num_steps`` steps at the end of the time axis, from a packed sequence or tensor.
+
+    Args:
+        input_tensor (PackedOrTensor): The input tensor or packed sequence to truncate.
+        num_steps (int, optional): The number of steps to remove. Defaults to 1.
+        batch_first (bool, optional): If True, the input tensor is assumed to be in (batch, seq, ...) format, otherwise (seq, batch, ...), only effective when accepting tensors. Defaults to True.
+        strict (bool, optional): If True, raises an error if truncating action will yield an empty sequence.
+
+    Returns:
+        PackedOrTensor: The truncated tensor or packed sequence.
+    '''
+    if num_steps < 0:
+        raise ValueError('num_steps must be non-negative.')
+    elif num_steps == 0:
+        return input_tensor
+
+    if isinstance(input_tensor, torch.Tensor):
+        if batch_first:
+            return input_tensor[:, :-num_steps, ...]
+        else:
+            return input_tensor[:-num_steps, ...]
+
+    bs = input_tensor.batch_sizes
+    B = int(bs[0].item())
+    T = int(bs.numel())
+    if strict:
+        if T <= num_steps or bs[num_steps - 1] != B:
+            raise ValueError('num_steps larger than minimum sequence length.')
+    else:
+        if T <= num_steps:
+            raise ValueError('num_steps larger than sequence length.')
+
+    new_T = max(T - num_steps, 0)
+    if new_T == T:
+        return input_tensor  # nothing to do
+    new_bs = input_tensor.batch_sizes[:new_T]
+    n_keep = int(new_bs.sum().item())
+    new_data = input_tensor.data[:n_keep]
+    return input_tensor._replace(data=new_data, batch_sizes=new_bs)
 
 def masked_select(
     values_input: PackedOrTensor | torch.Tensor,

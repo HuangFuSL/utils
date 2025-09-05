@@ -307,3 +307,226 @@ class TestMaskedSelect(unittest.TestCase):
                 [[5.0, 50.0], [0.0,  0.0]],
             ]
         )
+
+class TestPrependLeft(unittest.TestCase):
+    def make_packed_from_lengths(
+        self, lengths, feat_shape=(4,), dtype=torch.float32,
+        device="cpu", enforce_sorted=True
+    ):
+        torch.manual_seed(0)
+        B = len(lengths)
+        max_len = max(lengths)
+        total = max_len * B * int(torch.tensor(feat_shape).prod().item())
+        base = torch.arange(total, dtype=dtype, device=device)
+        padded = base.view(max_len, B, *feat_shape).clone()
+
+        for b, L in enumerate(lengths):
+            if L < max_len:
+                padded[L:, b] = 0
+
+        packed = torch.nn.utils.rnn.pack_padded_sequence(
+            padded, lengths=lengths, batch_first=False, enforce_sorted=enforce_sorted
+        )
+        return packed, padded
+
+    def setUp(self):
+        self.devices = ["cpu"]
+        if torch.cuda.is_available():
+            self.devices.append("cuda")
+        if torch.backends.mps.is_available():
+            self.devices.append("mps")
+
+    def test_basic_prepend_zero_padding(self):
+        for device in self.devices:
+            lengths = [5, 3, 2]  # B=3
+            ps, _ = self.make_packed_from_lengths(lengths, feat_shape=(4,), dtype=torch.float32, device=device)
+            B = int(ps.batch_sizes[0].item())
+            self.assertEqual(B, 3)
+
+            k = 2
+            new_ps = prepend_left(ps, append_value=0.0, num_steps=k)
+            expected_bs = torch.cat([
+                torch.full((k,), B, dtype=ps.batch_sizes.dtype, device=ps.batch_sizes.device),
+                ps.batch_sizes
+            ], dim=0)
+            self.assertTrue(torch.equal(new_ps.batch_sizes, expected_bs))
+
+            self.assertEqual(new_ps.data.size(0), ps.data.size(0) + k * B)
+            self.assertTrue(torch.all(new_ps.data[:k*B] == 0))
+            torch.testing.assert_close(new_ps.data[k*B:], ps.data)
+
+            self.assertIs(new_ps.sorted_indices, ps.sorted_indices)
+            self.assertIs(new_ps.unsorted_indices, ps.unsorted_indices)
+
+            self.assertEqual(int(new_ps.batch_sizes.sum().item()), new_ps.data.size(0))
+
+            self.assertEqual(new_ps.data.dtype, ps.data.dtype)
+            self.assertEqual(new_ps.data.device, ps.data.device)
+            self.assertEqual(new_ps.batch_sizes.device, ps.batch_sizes.device)
+
+    def test_nonzero_padding_value(self):
+        for device in self.devices:
+            lengths = [4, 4, 4]
+            ps, _ = self.make_packed_from_lengths(
+                lengths, feat_shape=(3,), dtype=torch.float32, device=device
+            )
+            B = int(ps.batch_sizes[0].item())
+            val = 5.5
+            k = 1
+            new_ps = prepend_left(ps, append_value=val, num_steps=k)
+
+            self.assertTrue(torch.all(new_ps.data[:k*B] == val))
+            torch.testing.assert_close(new_ps.data[k*B:], ps.data)
+
+    def test_zero_steps_returns_same_object(self):
+        lengths = [3, 2]
+        ps, _ = self.make_packed_from_lengths(lengths)
+        self.assertIs(prepend_left(ps, num_steps=0), ps)
+
+    def test_negative_steps_raises(self):
+        lengths = [3, 2, 1]
+        ps, _ = self.make_packed_from_lengths(lengths)
+        with self.assertRaises(ValueError):
+            prepend_left(ps, num_steps=-1)
+
+    def test_indices_preserved_when_unsorted(self):
+        lengths = [3, 5, 2]
+        ps, _ = self.make_packed_from_lengths(lengths, enforce_sorted=False)
+        self.assertIsNotNone(ps.sorted_indices)
+        self.assertIsNotNone(ps.unsorted_indices)
+
+        new_ps = prepend_left(ps, num_steps=3)
+        self.assertIs(new_ps.sorted_indices, ps.sorted_indices)
+        self.assertIs(new_ps.unsorted_indices, ps.unsorted_indices)
+
+    def test_multi_feature_dims(self):
+        lengths = [5, 3, 2]
+        feat_shape = (2, 3)
+        ps, _ = self.make_packed_from_lengths(lengths, feat_shape=feat_shape, dtype=torch.float32)
+        B = int(ps.batch_sizes[0].item())
+        k = 2
+        new_ps = prepend_left(ps, append_value=0.0, num_steps=k)
+
+        self.assertEqual(new_ps.data.shape, (ps.data.shape[0] + k * B, *feat_shape))
+        self.assertTrue(torch.all(new_ps.data[:k*B] == 0.0))
+        torch.testing.assert_close(new_ps.data[k*B:], ps.data)
+
+    def test_integer_dtype_padding(self):
+        lengths = [4, 2]
+        ps, _ = self.make_packed_from_lengths(lengths, feat_shape=(3,), dtype=torch.long)
+        B = int(ps.batch_sizes[0].item())
+        k = 1
+        val = 7
+        new_ps = prepend_left(ps, append_value=val, num_steps=k)
+
+        self.assertEqual(new_ps.data.dtype, torch.long)
+        self.assertTrue(torch.all(new_ps.data[:k*B] == val))
+        self.assertTrue(torch.equal(new_ps.data[k*B:], ps.data))
+
+class TestAppendRight(unittest.TestCase):
+    def make_packed_from_lengths(
+        self, lengths, feat_shape=(4,), dtype=torch.float32,
+        device="cpu", enforce_sorted=True
+    ):
+        torch.manual_seed(0)
+        B = len(lengths)
+        max_len = max(lengths)
+        total = max_len * B * int(torch.tensor(feat_shape).prod().item())
+        base = torch.arange(total, dtype=dtype, device=device)
+        padded = base.view(max_len, B, *feat_shape).clone()
+
+        for b, L in enumerate(lengths):
+            if L < max_len:
+                padded[L:, b] = 0
+
+        packed = torch.nn.utils.rnn.pack_padded_sequence(
+            padded, lengths=lengths, batch_first=False, enforce_sorted=enforce_sorted
+        )
+        return packed, padded
+    def setUp(self):
+        self.devices = ["cpu"]
+        if torch.cuda.is_available():
+            self.devices.append("cuda")
+        if torch.backends.mps.is_available():
+            self.devices.append("mps")
+
+    def trivial_append(self, seq, value, num_steps, enforce_sorted=True):
+        padded, lengths = torch.nn.utils.rnn.pad_packed_sequence(
+            seq, batch_first=True, padding_value=value
+        )
+        B, _, *H = padded.size()
+        padded = torch.cat([
+            padded,
+            padded.new_full((B, num_steps, *H), value)
+        ], dim=1)
+        lengths = lengths + num_steps
+        return torch.nn.utils.rnn.pack_padded_sequence(
+            padded, lengths, batch_first=True, enforce_sorted=enforce_sorted
+        )
+
+    def check_packed_sequence(self, a: PackedSequence, b: PackedSequence):
+        self.assertTrue(torch.equal(a.batch_sizes, b.batch_sizes))
+        self.assertTrue(torch.allclose(a.data, b.data))
+        self.assertIs(a.sorted_indices, b.sorted_indices)
+        self.assertIs(a.unsorted_indices, b.unsorted_indices)
+
+    def test_basic_append_zero_padding(self):
+        for device in self.devices:
+            lengths = [5, 3, 2]  # B=3
+            ps, _ = self.make_packed_from_lengths(lengths, feat_shape=(4,), device=device)
+            B = int(ps.batch_sizes[0].item())
+            self.assertEqual(B, 3)
+
+            k = 2
+            test = append_right(ps, append_value=0.0, num_steps=k)
+            target = self.trivial_append(ps, value=0.0, num_steps=k)
+            self.check_packed_sequence(test, target)
+
+    def test_nonzero_padding_value(self):
+        for device in self.devices:
+            lengths = [4, 4, 4]
+            ps, _ = self.make_packed_from_lengths(lengths, feat_shape=(3,), device=device)
+            val = 5.5
+            k = 2
+            test = append_right(ps, append_value=val, num_steps=k)
+            target = self.trivial_append(ps, value=val, num_steps=k)
+            self.check_packed_sequence(test, target)
+
+    def test_zero_steps_returns_same_object(self):
+        lengths = [3, 2]
+        ps, _ = self.make_packed_from_lengths(lengths)
+        self.assertIs(append_right(ps, num_steps=0), ps)
+
+    def test_negative_steps_raises(self):
+        lengths = [3, 2, 1]
+        ps, _ = self.make_packed_from_lengths(lengths)
+        with self.assertRaises(ValueError):
+            append_right(ps, num_steps=-1)
+
+    def test_indices_preserved_when_unsorted(self):
+        lengths = [3, 5, 2]
+        ps, _ = self.make_packed_from_lengths(lengths, enforce_sorted=False)
+        self.assertIsNotNone(ps.sorted_indices)
+        self.assertIsNotNone(ps.unsorted_indices)
+
+        new_ps = append_right(ps, num_steps=3)
+        self.assertIs(new_ps.sorted_indices, ps.sorted_indices)
+        self.assertIs(new_ps.unsorted_indices, ps.unsorted_indices)
+
+    def test_multi_feature_dims(self):
+        lengths = [5, 3, 2]
+        feat_shape = (2, 3)
+        ps, _ = self.make_packed_from_lengths(lengths, feat_shape=feat_shape, dtype=torch.float32)
+        k = 2
+        test = append_right(ps, append_value=0.0, num_steps=k)
+        target = self.trivial_append(ps, value=0.0, num_steps=k)
+        self.check_packed_sequence(test, target)
+
+    def test_integer_dtype_padding(self):
+        lengths = [4, 2]
+        ps, _ = self.make_packed_from_lengths(lengths, feat_shape=(3,), dtype=torch.long)
+        k = 1
+        val = 7
+        test = append_right(ps, append_value=val, num_steps=k)
+        target = self.trivial_append(ps, value=val, num_steps=k)
+        self.check_packed_sequence(test, target)
