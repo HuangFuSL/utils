@@ -62,6 +62,7 @@ class Activation(Module):
             'sigmoid': torch.nn.Sigmoid,
             'tanh': torch.nn.Tanh,
             'softmax': torch.nn.Softmax,
+            'logsoftmax': torch.nn.LogSoftmax,
             'softplus': torch.nn.Softplus,
             'leaky_relu': torch.nn.LeakyReLU,
             'leakyrelu': torch.nn.LeakyReLU,
@@ -115,7 +116,7 @@ class DNN(Module):
         batchnorm (bool): Whether to apply batch normalization after each linear layer.
         bias (bool): Whether to include a bias term in the linear layers.
         dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
-        activation (str | None): Activation function to apply after each layer.
+        activation (str | Activation | None): Activation function to apply after each layer.
         residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
 
     Shapes:
@@ -130,7 +131,7 @@ class DNN(Module):
         batchnorm: bool = False,
         bias: bool = True,
         dropout: float | None = None,
-        activation: str | None = 'relu',
+        activation: str | Activation | None = 'relu',
         residual: bool = False
     ):
         super(DNN, self).__init__()
@@ -164,8 +165,10 @@ class DNN(Module):
             current_layer.append(layer_type(in_dim, out_dim, bias))
             if batchnorm:
                 current_layer.append(torch.nn.BatchNorm1d(out_dim))
-            if activation is not None:
+            if isinstance(activation, str):
                 current_layer.append(Activation(activation))
+            elif isinstance(activation, Activation):
+                current_layer.append(activation)
             if dropout is not None:
                 current_layer.append(torch.nn.Dropout(dropout))
 
