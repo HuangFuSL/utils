@@ -5,7 +5,7 @@ Originally in ctorch.py
 '''
 
 
-from typing import TYPE_CHECKING, Callable, List
+from typing import TYPE_CHECKING, Any, Callable, List, Protocol
 import torch
 import warnings
 
@@ -421,6 +421,210 @@ class FactorizedNoisyLinear(Module):
             weight = self.weight_mu
             bias = self.bias_mu
         return torch.nn.functional.linear(x, weight, bias)
+
+
+class CholeskyTrilLinear(Module):
+    '''
+    Implements a linear layer that returns a lower-triangular matrix that is positive definite.
+
+    Args:
+        in_features (int): Number of input features.
+        out_dim (int): The output matrix dimension.
+        bias (bool): Whether to include a bias term.
+        eps (float): The small value added to the main diagonal of the matrix
+        non_neg_func (str | Callable): Element-wise non-negative activation function to use. Should be one of:
+
+            * ``softplus``: :math:`f(x) = \\log(1 + \\exp(x))`
+            * ``elu``: :math:`f(x) = ELU(x) + 1`
+            * ``sigmoid``: :math:`f(x) = 1 / (1 + e^{-x})`
+            * ``square``: :math:`f(x) = x^2`
+            * ``exp``: :math:`f(x) = e^x`
+
+    Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_dim, out_dim)
+    '''
+    def __init__(
+        self, in_features: int, out_dim: int,
+        bias: bool = True, eps: float = 1e-4,
+        non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus'
+    ):
+        super().__init__()
+
+        self.in_features = in_features
+        self.out_lower = out_dim * (out_dim - 1) // 2
+        self.out_dim = out_dim
+
+        if not isinstance(non_neg_func, str):
+            self.non_neg_act = non_neg_func
+        elif non_neg_func in {'softplus', 'sigmoid'}:
+            self.non_neg_act = getattr(torch.nn.functional, non_neg_func)
+        elif non_neg_func == 'elu':
+            self.non_neg_act = lambda x: torch.nn.functional.elu(x) + 1
+        elif non_neg_func in {'square', 'exp'}:
+            self.non_neg_act = getattr(torch, non_neg_func)
+        else:
+            raise ValueError(
+                f'A non-negative activation should be used to clip diagonals, got {non_neg_func}.'
+            )
+        self.diag_layer = torch.nn.Linear(in_features, self.out_dim, bias)
+        if out_dim > 1:
+            self.lower_layer = torch.nn.Linear(in_features, self.out_lower, bias)
+        else:
+            self.lower_layer = None
+
+        self.indices: torch.Tensor
+        self.register_buffer('indices', torch.tril_indices(out_dim, out_dim, -1))
+        self.eps: torch.Tensor
+        self.register_buffer('eps', torch.tensor(eps))
+
+    def diag(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the main diagonal of the resulting matrix.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_dim)
+        '''
+        diag = self.diag_layer(x)
+        return self.non_neg_act(diag) + self.eps
+
+    def pd(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the positive definite :math:`LL^\\top`.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_dim, out_dim)
+        '''
+        L = self(x)
+        return L @ L.transpose(-1, -2)
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the positive definite linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Returns:
+            torch.Tensor: Tril tensor of shape (\\*, out_dim, out_dim).
+        '''
+        *B, _ = x.shape
+        out = torch.diag_embed(self.diag(x))
+        if self.lower_layer is not None:
+            out[..., self.indices[0], self.indices[1]] = self.lower_layer(x)
+        return out
+
+
+class MultivariateNormalClass(Protocol):
+    '''
+    Internal protocol for ``GaussianLinear`` module. Any valid ``gaussian_type`` parameter should follow the following protocol.
+
+    .. code-block:: python
+
+        def __call__(
+            self, loc: torch.Tensor, covariance_matrix: torch.Tensor | None = None,
+            precision_matrix: torch.Tensor | None = None,
+            scale_tril: torch.Tensor | None = None,
+            validate_args: Any = None
+        ) -> torch.distributions.Distribution:
+            ...
+    '''
+    def __call__(
+        self, loc: torch.Tensor, covariance_matrix: torch.Tensor | None = None,
+        precision_matrix: torch.Tensor | None = None,
+        scale_tril: torch.Tensor | None = None,
+        validate_args: Any = None
+    ) -> torch.distributions.Distribution:
+        ...
+
+
+class GaussianLinear(Module):
+    '''
+    Implements a linear layer that returns a multivariate Gaussian distribution
+
+    Args:
+        in_features (int): Number of input features.
+        out_features (int): Number of output features.
+        bias (bool): Whether to include a bias term.
+        eps (float): Epsilon value for ``CholeskyTrilLinear``
+        non_neg_func (str | Callable): Non-negative mapping for ``CholeskyTrilLinear``
+        gaussian_type (MultivariateNormalClass): The constructor of target distribution.
+
+    Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features)
+    '''
+    def __init__(
+        self, in_features: int, out_features: int,
+        bias: bool = True, eps: float = 1e-4,
+        non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus',
+        gaussian_type: MultivariateNormalClass =
+            torch.distributions.MultivariateNormal,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.gaussian_type = gaussian_type
+        self.linear_mean = torch.nn.Linear(in_features, out_features, bias)
+        self.linear_cov = CholeskyTrilLinear(
+            in_features, out_features, bias, eps, non_neg_func
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
+        '''
+        Forward pass for the positive definite linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Returns:
+            torch.distributions.Distribution: The target distribution.
+        '''
+        mean = self.linear_mean(x)
+        cov_tril = self.linear_cov(x)
+        return self.gaussian_type(mean, scale_tril=cov_tril)
+
+    def cov(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the covariance matrix of the target distribution.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features, out_features)
+        '''
+        return self.linear_cov.pd(x)
+
+    def mean(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the mean value of the target distribution.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, in_features).
+
+        Shapes:
+
+        * Input shape: (\\*, in_features)
+        * Output shape: (\\*, out_features)
+        '''
+        return self.linear_mean(x)
+
 
 class RotaryTemporalEmbedding(Module):
     '''

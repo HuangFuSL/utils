@@ -98,6 +98,37 @@ class TestNoisyLinear(unittest.TestCase):
         output = layer(x)
         self.assertEqual(output.shape, (10, 5))
 
+
+class TestCholeskyTrilLinear(unittest.TestCase):
+    def test_shape(self):
+        layer = CholeskyTrilLinear(10, 5)
+        x = torch.randn(10, 10)
+        output = layer(x)
+        self.assertEqual(output.shape, (10, 5, 5))
+
+    def test_tril(self):
+        layer = CholeskyTrilLinear(10, 5)
+        x = torch.randn(10, 10)
+        o = layer(x)
+        oT = o.transpose(-1, -2)
+        lower_indices = torch.tril_indices(5, 5, offset=-1)
+        upper_indices = torch.triu_indices(5, 5, offset=1)
+        self.assertTrue(torch.all(o[:, upper_indices[0], upper_indices[1]] == 0))
+        self.assertTrue(torch.all(oT[:, lower_indices[0], lower_indices[1]] == 0))
+
+    def test_det(self):
+        layer = CholeskyTrilLinear(10, 5)
+        x = torch.randn(10, 10)
+        output = layer.pd(x)
+        self.assertTrue(torch.all(torch.det(output) > 0))
+
+class TestGaussianLinear(unittest.TestCase):
+    def test_gaussian(self):
+        layer = GaussianLinear(10, 5)
+        x = torch.randn(10, 10)
+        output = layer(x).rsample()
+        self.assertTrue(output.shape, (10, 5))
+
 class TestTemporalEmbedding(unittest.TestCase):
     def test_rotary_temporal_embedding(self):
         N, L, D = 128, 256, 128
