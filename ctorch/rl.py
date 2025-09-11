@@ -601,9 +601,10 @@ RewardMapping = Callable[
 
 @torch.inference_mode()
 def run_episode(
-    env: gymnasium.Env, model: BaseRLModel, eps: float,
+    env: gymnasium.Env, model: BaseRLModel,
     max_episode_steps: int | None = None,
-    reward_shape: RewardMapping = _default_shape
+    reward_shape: RewardMapping = _default_shape,
+    **act_kwargs: Any
 ):
     '''
     Simulates a single episode in the environment using the given model.
@@ -649,7 +650,7 @@ def run_episode(
     if pin_memory:
         state = state.pin_memory()
     while True:
-        action = model.act(state.to(device), eps=eps).detach().to('cpu', non_blocking=True)
+        action = model.act(state.to(device), **act_kwargs).detach().to('cpu', non_blocking=True)
         next_state, reward, done, time_exceed, _ = step_fn(action)
         rewards += reward
         reward = reward_shape(state, action, reward, next_state, done, time_exceed)
@@ -681,6 +682,7 @@ def run_episode(
         )
 
         r = r.reshape(1, 1, -1)
+        r = torch.nn.functional.pad(r, (model.tau - 1, 0), mode='constant', value=0.0)
         kernel = kernel.reshape(1, 1, -1)
         r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1) / model.tau
         ret_length = r_conv.shape[0]
