@@ -4,8 +4,9 @@ rl.py - Utilities Components for Reinforcement Learning
 from __future__ import annotations
 
 import abc
+import copy
 import functools
-from typing import Any, Callable, Dict, List, MutableMapping, Tuple
+from typing import Any, Callable, Dict, Iterator, List, MutableMapping, Tuple
 
 import gymnasium
 import torch
@@ -240,12 +241,18 @@ class BaseRLModel(nn.Module, abc.ABC):
         super().__init__()
         if isinstance(shape_dim, int):
             shape_dim = (shape_dim,)
+        if (
+            (isinstance(shape_dim, int) and shape_dim <= 0) or
+            (isinstance(shape_dim, tuple) and any(d <= 0 for d in shape_dim))
+        ):
+            raise ValueError('shape_dim must be positive.')
         self.shape_dim = shape_dim
         self.gamma = gamma
         self.tau = tau
 
+    @abc.abstractmethod
     @torch.no_grad()
-    def act(self, state: torch.Tensor, eps: float = 0.0, sample_wise: bool = True) -> torch.Tensor:
+    def act(self, state: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         '''
         Policy for selecting actions based on the current state and exploration rate. By default, the policy takes exploration actions with a probability of :math:`\\varepsilon` and exploitation actions with a probability of :math:`1 - \\varepsilon`.
 
@@ -255,82 +262,142 @@ class BaseRLModel(nn.Module, abc.ABC):
         Returns:
             torch.Tensor: The selected actions.
         '''
-        state = state.to(self.device)
-        if not sample_wise:
-            if torch.rand(()) < eps:
-                return self.explore(state)
-            return self.exploit(state)
-        A, B = self.explore(state), self.exploit(state)
-        unif = torch.rand(state.shape[:-len(self.shape_dim)], device=self.device)
-        return torch.where(unif < eps, A, B)
-
-    @abc.abstractmethod
-    @torch.no_grad()
-    def explore(self, state: torch.Tensor) -> torch.Tensor:
-        '''
-        The exploration policy, defaulting to random actions.
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-
-        Returns:
-            torch.Tensor: The selected actions.
-        '''
         ...
 
-    @abc.abstractmethod
-    @torch.no_grad()
-    def exploit(self, state: torch.Tensor) -> torch.Tensor:
-        '''
-        The exploitation policy, selecting actions based on the current Q-values.
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-
-        Returns:
-            torch.Tensor: The selected actions.
-        '''
-        ...
-
-
-class BaseQNetwork(BaseRLModel, abc.ABC):
+class BasePolicyNetwork(BaseRLModel):
     '''
-    Abstract base class for Q-Networks.
-
-    One should either implement the ``forward`` method, or both `Q` and `action_Q` methods.
+    Abstract base class for policy-based reinforcement learning models.
 
     Args:
         shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
-        num_actions (int): The number of actions the agent can take.
         gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
         tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
-
-    Attributes
-        - \\_target (BaseQNetwork | None): The target network for the Q-learning algorithm. Used for evaluating the TD target :math:`y = r + \\arg\\max_{a'} Q(s', a')`.
     '''
+    def __init__(
+        self,
+        state_dim: Tuple[int, ...] | int,
+        *, gamma: float = 0.99, tau: int = 1
+    ):
+        super().__init__(state_dim, gamma=gamma, tau=tau)
 
-    def __init__(self, shape_dim: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
-        super(BaseQNetwork, self).__init__(shape_dim=shape_dim, gamma=gamma, tau=tau)
-        if num_actions <= 0:
-            raise ValueError('num_actions must be positive.')
-        if (
-            (isinstance(shape_dim, int) and shape_dim <= 0) or
-            (isinstance(shape_dim, tuple) and any(d <= 0 for d in shape_dim))
-        ):
-            raise ValueError('shape_dim must be positive.')
+    @torch.no_grad()
+    def act(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the action sampled from the policy given the state.
 
-        self._target: BaseQNetwork | None = None
-        self.num_actions = num_actions
+        Args:
+            state (torch.Tensor): The input state tensor.
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        fwd_overridden = cls.forward is not BaseQNetwork.forward
-        q_overridden = getattr(cls, "Q", BaseQNetwork.Q) is not BaseQNetwork.Q
-        a_overridden = getattr(cls, "action_Q", BaseQNetwork.action_Q) is not BaseQNetwork.action_Q
-        if not (fwd_overridden or (q_overridden and a_overridden)):
-            raise TypeError(
-                f'{cls.__name__} must override `forward` OR both `Q` and `action_Q`.'
-            )
+        Returns:
+            torch.Tensor: The sampled action from the policy.
+        '''
+        dist = self(state)
+        if dist.has_rsample:
+            return dist.rsample()
+        return dist.sample()
+
+    def policy_parameters(self) -> Iterator[torch.nn.Parameter]:
+        '''
+        Get the parameters of the policy network.
+
+        Returns:
+            Iterator[torch.nn.Parameter]: An iterator over the parameters of the policy network.
+        '''
+        inner_ids = { id(p) for p in self.value_parameters() }
+        if not inner_ids:
+            return self.parameters()
+        return (p for p in self.parameters() if id(p) not in inner_ids)
+
+    @property
+    def value_model(self) -> 'BaseValueNetwork':
+        '''
+        Get the state value sub-network. If not implemented, raises NotImplementedError.
+        '''
+        raise NotImplementedError('This model does not have a value function.')
+
+    def value_parameters(self) -> Iterator[torch.nn.Parameter]:
+        '''
+        Get the parameters of the value network.
+
+        Returns:
+            Iterator[torch.nn.Parameter]: An iterator over the parameters of the value network.
+        '''
+        try:
+            return self.value_model.parameters()
+        except NotImplementedError:
+            return iter(())
+
+    @abc.abstractmethod
+    def forward(self, state: torch.Tensor) -> torch.distributions.Distribution:
+        '''
+        Forward pass to compute the action distribution given the state.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.distributions.Distribution: The action distribution given the state.
+        '''
+        raise NotImplementedError
+
+    def log_pi(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the log probability of the action given the state.
+        '''
+        return self(state).log_prob(action)
+
+    def pi(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        '''
+        Return the action distribution probability given the state.
+        '''
+        return torch.exp(self.log_pi(state, action))
+
+    def cumulative_reward(self, r: torch.Tensor, lambda_: float = 1) -> torch.Tensor:
+        '''
+        Calculate the cumulative reward for a trajectory, or the GAE(lambda) estimate.
+
+        Args:
+            r (torch.Tensor): The reward tensor of shape (L,), for GAE, r is the state-value TD error :math:`r_t + \\gamma V(s_{t+1}) - V(s_t)`.
+            lambda\\_ (float, optional): The lambda parameter for GAE. Defaults to 1 for cumulative reward.
+
+        Returns:
+            torch.Tensor: The cumulative reward or GAE estimate of shape (L,).
+
+        Shapes:
+
+            - r: (L,)
+            - output: (L,)
+        '''
+        gamma = self.gamma * lambda_
+        y = torch.zeros_like(r)
+        acc = torch.zeros_like(r[..., 0])
+        T = r.size(-1)
+        for t in range(T - 1, -1, -1):
+            acc = r[..., t] + gamma * acc
+            y[..., t] = acc
+        return y
+
+    def normalize_trajectory(self, r: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+        return (r - r.mean().detach()) / (r.std(unbiased=False).detach() + eps)
+
+
+class TargetNetworkMixin(nn.Module):
+    '''
+    Mixin class for models with a target network.
+    '''
+    def __init__(self):
+        super().__init__()
+        self._target: nn.Module | None = None
+
+    def setup_target(self):
+        '''
+        Create a target network by copying the current network. This method can only be called once.
+        '''
+        if self._target is not None:
+            return
+        self._target = copy.deepcopy(self)
+        self._target.requires_grad_(False)
+        self._target.setup_target = lambda: None # Disable further calls
 
     @property
     def target(self):
@@ -338,7 +405,7 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
         The target network for the Q-learning algorithm. Used in double DQN. If not set, the current network is used.
 
         Returns:
-            BaseQNetwork: The target network.
+            BaseQNetwork: The target network or self if not set.
         '''
         if self._target is not None:
             return self._target
@@ -369,6 +436,135 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
             else:
                 b_t.copy_(b)
         self.target.requires_grad_(False)
+
+
+class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
+    '''
+    Abstract base class for Value Networks.
+
+    One should either implement the ``forward`` method, or `V` method.
+
+    Args:
+        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
+        tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
+    '''
+    def __init__(self, shape_dim: Tuple[int, ...] | int, *, gamma: float = 0.99, tau: int = 1):
+        TargetNetworkMixin.__init__(self)
+        BaseRLModel.__init__(self, shape_dim=shape_dim, gamma=gamma, tau=tau)
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        fwd_overridden = cls.forward is not BaseValueNetwork.forward
+        v_overridden = getattr(cls, "V", BaseValueNetwork.V) is not BaseValueNetwork.V
+        if not (fwd_overridden or v_overridden):
+            raise TypeError(
+                f'{cls.__name__} must override `forward` OR `V`.'
+            )
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Returns the value function V(s) for the given state.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The value function V(s) for the given state.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - output: (\\*)
+        '''
+        return self.V(state)
+
+    def V(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the state-value function V(s) for a given state s.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The state-value function V(s) for a given state s.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - output: (\\*)
+        '''
+        return self(state)
+
+    def act(self, state: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        raise NotImplementedError('Value networks do not have a policy for selecting actions.')
+
+    def td_step(
+        self,
+        state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
+        state_prime: torch.Tensor, is_terminal: torch.Tensor,
+        a_prime: torch.Tensor | None = None
+    ):
+        '''
+        The loss function for training the value network using the TD loss.
+
+        .. math::
+            \\begin{aligned}
+                \\text{LHS} &= V(s) \\\\
+                \\text{RHS} &= \\left\\{\\begin{aligned}
+                    & r + V(s') & \\text{if not terminal} \\\\
+                    & r & \\text{if terminal}
+                \\end{aligned}\\right.
+            \\end{aligned}
+
+        The LHS and RHS can be optimized using ``MSELoss`` or ``SmoothL1Loss``.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+            action (torch.Tensor): Not used.
+            reward (torch.Tensor): The reward tensor over :math:`\\tau` steps.
+            state_prime (torch.Tensor): The next state tensor.
+            is_terminal (torch.Tensor): The terminal state indicator tensor.
+            a_prime (torch.Tensor | None): Not used.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
+        '''
+        current = self(state)
+        with torch.no_grad():
+            mode = self.target.training
+            self.target.eval()
+            target = reward + (self.gamma ** self.tau) * self.target(state_prime) * (1 - is_terminal)
+            self.target.train(mode)
+        return current, target
+
+class BaseQNetwork(BaseValueNetwork, abc.ABC):
+    '''
+    Abstract base class for Q-Networks.
+
+    One should either implement the ``forward`` method, or both `Q` and `action_Q` methods.
+
+    Args:
+        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        num_actions (int): The number of actions the agent can take.
+        gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
+        tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
+    '''
+
+    def __init__(self, shape_dim: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
+        super(BaseQNetwork, self).__init__(shape_dim=shape_dim, gamma=gamma, tau=tau)
+        if num_actions <= 0:
+            raise ValueError('num_actions must be positive.')
+
+        self.num_actions = num_actions
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        fwd_overridden = cls.forward is not BaseQNetwork.forward
+        q_overridden = getattr(cls, "Q", BaseQNetwork.Q) is not BaseQNetwork.Q
+        a_overridden = getattr(cls, "action_Q", BaseQNetwork.action_Q) is not BaseQNetwork.action_Q
+        if not (fwd_overridden or (q_overridden and a_overridden)):
+            raise TypeError(
+                f'{cls.__name__} must override `forward` OR both `Q` and `action_Q`.'
+            )
 
     # Value functions
 
@@ -408,22 +604,6 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
         return self(state, action)
 
     def V(self, state: torch.Tensor) -> torch.Tensor:
-        '''
-        Compute the state-value function V(s) for a given state s.
-
-        .. math::
-            V(s) = \\max_a Q(s, a)
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-
-        Returns:
-            torch.Tensor: The state-value function V(s) for a given state s.
-
-        Shapes:
-            - state: (\\*, (state_dims,))
-            - output: (\\*)
-        '''
         return self.Q(state).amax(dim=-1)
 
     def A(self, state: torch.Tensor) -> torch.Tensor:
@@ -468,6 +648,26 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
         action = action.to(torch.long)
         return self.action_Q(state, action) - self.V(state)
 
+    @torch.no_grad()
+    def act(self, state: torch.Tensor, eps: float = 0.0, sample_wise: bool = True) -> torch.Tensor:
+        '''
+        Policy for selecting actions based on the current state and exploration rate. By default, the policy takes exploration actions with a probability of :math:`\\varepsilon` and exploitation actions with a probability of :math:`1 - \\varepsilon`.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The selected actions.
+        '''
+        state = state.to(self.device)
+        if not sample_wise:
+            if torch.rand(()) < eps:
+                return self.explore(state)
+            return self.exploit(state)
+        A, B = self.explore(state), self.exploit(state)
+        unif = torch.rand(state.shape[:-len(self.shape_dim)], device=self.device)
+        return torch.where(unif < eps, A, B)
+
     # Policies
     @torch.no_grad()
     def explore(self, state: torch.Tensor) -> torch.Tensor:
@@ -499,7 +699,7 @@ class BaseQNetwork(BaseRLModel, abc.ABC):
 
     # Training
 
-    def loss(
+    def td_step(
         self,
         state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
         state_prime: torch.Tensor, is_terminal: torch.Tensor,
