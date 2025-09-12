@@ -125,7 +125,7 @@ class ReplayBuffer(nn.Module):
         super().__init__()
         self.size = size
         action_dtype = torch.float32 if continuous_action else torch.long
-        self.keys = ['state', 'action', 'reward', 'next_state', 'done']
+        self.keys = ['state', 'action', 'reward', 'next_state', 'done', 'log_pi']
         self.dtypes = [torch.float32 if k != 'action' else action_dtype for k in self.keys]
         self.data: MutableMapping[str, CircularTensor] = torch.nn.ModuleDict({
             k: CircularTensor(size, dtype=dtype)
@@ -157,10 +157,10 @@ class ReplayBuffer(nn.Module):
             raise ValueError('Not enough samples in buffer')
         return torch.randperm(self.length, dtype=torch.long)[:batch_size]
 
-    def store(self, state, action, reward, next_state, done):
+    def store(self, *args):
         ''' Store a batch of new experience in the buffer. '''
         B = None
-        for k, v in zip(self.keys, [state, action, reward, next_state, done]):
+        for k, v in zip(self.keys, args):
             if B is not None and v.shape[0] != B:
                 raise ValueError('Inconsistent batch size')
             v = torch.as_tensor(v, dtype=self.data[k].dtype, device=self.data[k].device)
@@ -220,9 +220,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         ).to(dtype=torch.long)
         return idx
 
-    def store(self, state, action, reward, next_state, done):
+    def store(self, state, action, reward, next_state, done, log_pi):
         ''' Store a batch of new experience in the buffer. '''
-        super().store(state, action, reward, next_state, done)
+        super().store(state, action, reward, next_state, done, log_pi)
         B = state.shape[0]
         weight = self.p_max.unsqueeze(0).expand(B)
         self.weight.append(weight)
@@ -252,7 +252,7 @@ class BaseRLModel(nn.Module, abc.ABC):
 
     @abc.abstractmethod
     @torch.no_grad()
-    def act(self, state: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def act(self, state: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
         '''
         Policy for selecting actions based on the current state and exploration rate. By default, the policy takes exploration actions with a probability of :math:`\\varepsilon` and exploitation actions with a probability of :math:`1 - \\varepsilon`.
 
@@ -260,7 +260,7 @@ class BaseRLModel(nn.Module, abc.ABC):
             state (torch.Tensor): The input state tensor.
 
         Returns:
-            torch.Tensor: The selected actions.
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing the selected action and the log probability of the action.
         '''
         ...
 
@@ -351,7 +351,7 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
         )
 
     @torch.no_grad()
-    def act(self, state: torch.Tensor) -> torch.Tensor:
+    def act(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         '''
         Return the action sampled from the policy given the state.
 
@@ -359,12 +359,13 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
             state (torch.Tensor): The input state tensor.
 
         Returns:
-            torch.Tensor: The sampled action from the policy.
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing the sampled action and its log probability.
         '''
         dist = self(state)
         if dist.has_rsample:
-            return dist.rsample()
-        return dist.sample()
+            ret = dist.rsample()
+        ret = dist.sample()
+        return ret, dist.log_prob(ret)
 
     def policy_parameters(self) -> Iterator[torch.nn.Parameter]:
         '''
@@ -507,13 +508,14 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         '''
         return self(state)
 
-    def act(self, state: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def act(self, state: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError('Value networks do not have a policy for selecting actions.')
 
     def td_step(
         self,
         state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
         state_prime: torch.Tensor, is_terminal: torch.Tensor,
+        log_pi: torch.Tensor | None = None,
         a_prime: torch.Tensor | None = None
     ):
         '''
@@ -536,6 +538,7 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
             reward (torch.Tensor): The reward tensor over :math:`\\tau` steps.
             state_prime (torch.Tensor): The next state tensor.
             is_terminal (torch.Tensor): The terminal state indicator tensor.
+            log_pi (torch.Tensor | None): Not used.
             a_prime (torch.Tensor | None): Not used.
 
         Returns:
@@ -662,7 +665,9 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         return self.action_Q(state, action) - self.V(state)
 
     @torch.no_grad()
-    def act(self, state: torch.Tensor, eps: float = 0.0, sample_wise: bool = True) -> torch.Tensor:
+    def act(
+        self, state: torch.Tensor, eps: float = 0.0, sample_wise: bool = True
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         '''
         Policy for selecting actions based on the current state and exploration rate. By default, the policy takes exploration actions with a probability of :math:`\\varepsilon` and exploitation actions with a probability of :math:`1 - \\varepsilon`.
 
@@ -673,13 +678,17 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             torch.Tensor: The selected actions.
         '''
         state = state.to(self.device)
+        A, B = self.explore(state), self.exploit(state)
+        # For greedy actions, prob is 1 - eps + eps / num_actions
+        # For random actions, prob is eps / num_actions
         if not sample_wise:
             if torch.rand(()) < eps:
-                return self.explore(state)
-            return self.exploit(state)
-        A, B = self.explore(state), self.exploit(state)
+                ret = A
+            ret = B
         unif = torch.rand(state.shape[:-len(self.shape_dim)], device=self.device)
-        return torch.where(unif < eps, A, B)
+        ret = torch.where(unif < eps, A, B)
+        prob = (eps / self.num_actions) + (1 - eps) * (ret == B).to(torch.float32)
+        return ret, prob.log()
 
     # Policies
     @torch.no_grad()
@@ -716,7 +725,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         self,
         state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
         state_prime: torch.Tensor, is_terminal: torch.Tensor,
-        a_prime: torch.Tensor | None = None
+        log_pi: torch.Tensor | None = None, a_prime: torch.Tensor | None = None
     ):
         '''
         The loss function for training the Q-network using the TD loss.
@@ -738,6 +747,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             reward (torch.Tensor): The reward tensor over :math:`\\tau` steps.
             state_prime (torch.Tensor): The next state tensor.
             is_terminal (torch.Tensor): The terminal state indicator tensor.
+            log_pi (torch.Tensor): Not used.
             a_prime (torch.Tensor | None): The next action tensor for SARSA. If None, the action is selected using the exploitation policy (DQN).
 
         Returns:
@@ -830,7 +840,7 @@ def run_episode(
         reward_shape (Callable[[s, a, r, s_prime, terminated, truncated], torch.Tensor]): A function to adjust the reward based on the current reward, arrived state, terminal state, and time limit truncation. Returns the adjusted reward to be passed to the model.
 
     Returns:
-        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d)` tuple, and the overall *raw* reward.
+        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d, \\log\\pi(a\\mid s))` tuple, and the overall *raw* reward.
     '''
     # Parse env
     s_shape = env.observation_space.shape
@@ -853,6 +863,7 @@ def run_episode(
     result_a = torch.zeros(max_len, *a_shape, dtype=torch.float, pin_memory=pin_memory)
     result_r = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
     result_d = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
+    result_pi = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
 
     rewards = torch.tensor(0.0, device='cpu')
     steps = 0
@@ -863,7 +874,10 @@ def run_episode(
     if pin_memory:
         state = state.pin_memory()
     while True:
-        action = model.act(state.to(device), **act_kwargs).detach().to('cpu', non_blocking=True)
+        action, log_pi = model.act(state.to(device), **act_kwargs)
+        action = action.detach().to('cpu', non_blocking=True)
+        log_pi = log_pi.detach().to('cpu', non_blocking=True)
+
         next_state, reward, done, time_exceed, _ = step_fn(action)
         rewards += reward
         reward = reward_shape(state, action, reward, next_state, done, time_exceed)
@@ -873,6 +887,7 @@ def run_episode(
         result_r[steps] = reward.unsqueeze(0)
         result_s[steps, 1] = next_state
         result_d[steps] = done.unsqueeze(0)
+        result_pi[steps] = log_pi.unsqueeze(0)
 
         steps += 1
         state = next_state
@@ -880,12 +895,13 @@ def run_episode(
         if torch.any(done + time_exceed) or steps >= max_len:
             break
 
-    s, a, r, s_prime, d = map(lambda x: x.to(device), [
+    s, a, r, s_prime, d, log_pi = map(lambda x: x.to(device), [
         result_s[:steps, 0],  # state
         result_a[:steps], # action
         result_r[:steps], # reward
         result_s[:steps, 1], # next_state
-        result_d[:steps] # done
+        result_d[:steps], # done
+        result_pi[:steps]
     ])
 
     if model.tau > 1:
@@ -900,6 +916,7 @@ def run_episode(
         ret_length = r_conv.shape[0]
         return [
             s[:ret_length], a[:ret_length],
-            r_conv, s_prime[model.tau - 1:], d[model.tau - 1:]
+            r_conv, s_prime[model.tau - 1:], d[model.tau - 1:], \
+            log_pi[:ret_length]
         ], rewards.item()
-    return [s, a, r, s_prime, d], rewards.item()
+    return [s, a, r, s_prime, d, log_pi], rewards.item()
