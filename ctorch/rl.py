@@ -264,7 +264,66 @@ class BaseRLModel(nn.Module, abc.ABC):
         '''
         ...
 
-class BasePolicyNetwork(BaseRLModel):
+
+class TargetNetworkMixin(nn.Module):
+    '''
+    Mixin class for models with a target network.
+    '''
+
+    def __init__(self):
+        super().__init__()
+        self._target: nn.Module | None = None
+
+    def setup_target(self):
+        '''
+        Create a target network by copying the current network. This method can only be called once.
+        '''
+        if self._target is not None:
+            return
+        self._target = copy.deepcopy(self)
+        self._target.requires_grad_(False)
+        self._target.setup_target = lambda: None  # Disable further calls
+
+    @property
+    def target(self):
+        '''
+        The target network for the Q-learning algorithm. Used in double DQN. If not set, the current network is used.
+
+        Returns:
+            BaseQNetwork: The target network or self if not set.
+        '''
+        if self._target is not None:
+            return self._target
+        return self
+
+    @torch.no_grad()
+    def update_target(self, weight: float = 1.0):
+        '''
+        Update the target network by copying the weights from the current network. No-op if the target network is not used.
+
+        Args:
+            weight (float, optional): The interpolation weight for the update. By default, it is 1.0.
+        '''
+        if not (0.0 < weight <= 1.0):
+            raise ValueError('weight must be in (0.0, 1.0]')
+        if self._target is None:
+            return
+        if weight == 1.0:
+            self._target.load_state_dict(self.state_dict(), strict=False)
+            return
+        # Polyak averaging
+        for p_t, p in zip(self._target.parameters(), self.parameters(), strict=True):
+            p_t.mul_(1.0 - weight).add_(p, alpha=weight)
+
+        for b_t, b in zip(self._target.buffers(), self.buffers(), strict=True):
+            if torch.is_floating_point(b_t) and torch.is_floating_point(b):
+                b_t.mul_(1.0 - weight).add_(b, alpha=weight)
+            else:
+                b_t.copy_(b)
+        self.target.requires_grad_(False)
+
+
+class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
     '''
     Abstract base class for policy-based reinforcement learning models.
 
@@ -279,6 +338,17 @@ class BasePolicyNetwork(BaseRLModel):
         *, gamma: float = 0.99, tau: int = 1
     ):
         super().__init__(state_dim, gamma=gamma, tau=tau)
+
+    def setup_target(self):
+        try:
+            self.value_model
+        except (NotImplementedError, AttributeError):
+            super().setup_target()
+            return
+        raise RuntimeError(
+            'To avoid duplicate targets, the target network should be set up '
+            'before setting up value_model.'
+        )
 
     @torch.no_grad()
     def act(self, state: torch.Tensor) -> torch.Tensor:
@@ -379,63 +449,6 @@ class BasePolicyNetwork(BaseRLModel):
 
     def normalize_trajectory(self, r: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
         return (r - r.mean().detach()) / (r.std(unbiased=False).detach() + eps)
-
-
-class TargetNetworkMixin(nn.Module):
-    '''
-    Mixin class for models with a target network.
-    '''
-    def __init__(self):
-        super().__init__()
-        self._target: nn.Module | None = None
-
-    def setup_target(self):
-        '''
-        Create a target network by copying the current network. This method can only be called once.
-        '''
-        if self._target is not None:
-            return
-        self._target = copy.deepcopy(self)
-        self._target.requires_grad_(False)
-        self._target.setup_target = lambda: None # Disable further calls
-
-    @property
-    def target(self):
-        '''
-        The target network for the Q-learning algorithm. Used in double DQN. If not set, the current network is used.
-
-        Returns:
-            BaseQNetwork: The target network or self if not set.
-        '''
-        if self._target is not None:
-            return self._target
-        return self
-
-    @torch.no_grad()
-    def update_target(self, weight: float = 1.0):
-        '''
-        Update the target network by copying the weights from the current network. No-op if the target network is not used.
-
-        Args:
-            weight (float, optional): The interpolation weight for the update. By default, it is 1.0.
-        '''
-        if not (0.0 < weight <= 1.0):
-            raise ValueError('weight must be in (0.0, 1.0]')
-        if self._target is None:
-            return
-        if weight == 1.0:
-            self._target.load_state_dict(self.state_dict(), strict=False)
-            return
-        # Polyak averaging
-        for p_t, p in zip(self._target.parameters(), self.parameters(), strict=True):
-            p_t.mul_(1.0 - weight).add_(p, alpha=weight)
-
-        for b_t, b in zip(self._target.buffers(), self.buffers(), strict=True):
-            if torch.is_floating_point(b_t) and torch.is_floating_point(b):
-                b_t.mul_(1.0 - weight).add_(b, alpha=weight)
-            else:
-                b_t.copy_(b)
-        self.target.requires_grad_(False)
 
 
 class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
