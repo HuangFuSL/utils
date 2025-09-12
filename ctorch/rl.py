@@ -534,7 +534,7 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
             self.target.eval()
             target = reward + (self.gamma ** self.tau) * self.target(state_prime) * (1 - is_terminal)
             self.target.train(mode)
-        return current, target
+        return current, target.detach()
 
 class BaseQNetwork(BaseValueNetwork, abc.ABC):
     '''
@@ -882,9 +882,8 @@ def run_episode(
         )
 
         r = r.reshape(1, 1, -1)
-        r = torch.nn.functional.pad(r, (model.tau - 1, 0), mode='constant', value=0.0)
         kernel = kernel.reshape(1, 1, -1)
-        r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1) / model.tau
+        r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1)
         ret_length = r_conv.shape[0]
         return [
             s[:ret_length], a[:ret_length],
