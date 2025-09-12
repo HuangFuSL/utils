@@ -5,14 +5,59 @@ from __future__ import annotations
 
 import abc
 import copy
+import dataclasses
 import functools
-from typing import Any, Callable, Dict, Iterator, List, MutableMapping, Tuple
+from typing import Any, Callable, ClassVar, Dict, Iterator, List, MutableMapping, Tuple
 
 import gymnasium
 import torch
 
 from . import nn
 
+
+@dataclasses.dataclass(slots=True)
+class Trajectory():
+    '''
+    A batch of states, actions, and rewards collected from the environment.
+
+    Args:
+        state (torch.Tensor): The states in the trajectory of shape (L, *state_shape).
+        action (torch.Tensor): The actions taken in the trajectory of shape (L, *action_shape).
+        reward (torch.Tensor): The rewards received in the trajectory of shape (L,).
+        next_state (torch.Tensor): The next states in the trajectory of shape (L, *state_shape).
+        done (torch.Tensor): The done flags in the trajectory of shape (L,).
+        log_pi (torch.Tensor): The log probabilities of the actions taken in the trajectory of shape (L,).
+        total_reward (float): The total reward of the trajectory. `nan` if the batch is not a trajectory.
+    '''
+    tensor_fields: ClassVar[List[str]] = dataclasses.field(init=False, repr=False, default=[
+        'state', 'action', 'reward', 'next_state', 'done', 'log_pi'
+    ])
+    state: torch.Tensor
+    action: torch.Tensor
+    reward: torch.Tensor
+    next_state: torch.Tensor
+    done: torch.Tensor
+    log_pi: torch.Tensor
+    total_reward: float
+
+    def clone(self):
+        for k in self.tensor_fields:
+            v = getattr(self, k)
+            if not isinstance(v, torch.Tensor):
+                raise TypeError(f'Field {k} must be a torch.Tensor, got {type(v)}')
+            setattr(self, k, v.clone())
+
+    def get(self, key: str) -> torch.Tensor:
+        if key not in self.tensor_fields:
+            raise ValueError(f'Invalid key: {key}')
+        return getattr(self, key)
+
+    def __iter__(self):
+        for k in self.tensor_fields:
+            yield getattr(self, k)
+
+    def __len__(self):
+        return self.state.shape[0]
 
 class CircularTensor(nn.Module):
     '''
@@ -137,15 +182,15 @@ class ReplayBuffer(nn.Module):
         ''' Get the current length of the buffer. '''
         return min(len(v) for v in self.data.values())
 
-    def __getitem__(self, idx: torch.Tensor) -> List[torch.Tensor]:
+    def __getitem__(self, idx: torch.Tensor) -> Trajectory:
         ''' Sample a batch of experiences from the buffer. '''
-        return [self.data[k][idx] for k in self.keys]
+        return Trajectory(*(self.data[k][idx] for k in self.keys), total_reward=float('nan'))
 
-    def get_batch(self, idx: torch.Tensor) -> List[torch.Tensor]:
+    def get_batch(self, idx: torch.Tensor) -> Trajectory:
         ''' Sample a batch of experiences from the buffer. '''
         return self[idx]
 
-    def forward(self, idx: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, idx: torch.Tensor) -> Trajectory:
         ''' Sample a batch of experiences from the buffer. '''
         return self[idx]
 
@@ -157,12 +202,13 @@ class ReplayBuffer(nn.Module):
             raise ValueError('Not enough samples in buffer')
         return torch.randperm(self.length, dtype=torch.long)[:batch_size]
 
-    def store(self, *args):
+    def store(self, trajectory: Trajectory):
         ''' Store a batch of new experience in the buffer. '''
         B = None
-        for k, v in zip(self.keys, args):
+        for k in self.keys:
             if B is not None and v.shape[0] != B:
                 raise ValueError('Inconsistent batch size')
+            v = trajectory.get(k)
             v = torch.as_tensor(v, dtype=self.data[k].dtype, device=self.data[k].device)
             self.data[k].append(v)
             B = v.shape[0]
@@ -220,10 +266,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         ).to(dtype=torch.long)
         return idx
 
-    def store(self, state, action, reward, next_state, done, log_pi):
+    def store(self, trajectory: Trajectory):
         ''' Store a batch of new experience in the buffer. '''
-        super().store(state, action, reward, next_state, done, log_pi)
-        B = state.shape[0]
+        super().store(trajectory)
+        B = trajectory.get('state').shape[0]
         weight = self.p_max.unsqueeze(0).expand(B)
         self.weight.append(weight)
 
@@ -828,7 +874,7 @@ def run_episode(
     max_episode_steps: int | None = None,
     reward_shape: RewardMapping = _default_shape,
     **act_kwargs: Any
-):
+) -> Trajectory:
     '''
     Simulates a single episode in the environment using the given model.
 
@@ -840,7 +886,7 @@ def run_episode(
         reward_shape (Callable[[s, a, r, s_prime, terminated, truncated], torch.Tensor]): A function to adjust the reward based on the current reward, arrived state, terminal state, and time limit truncation. Returns the adjusted reward to be passed to the model.
 
     Returns:
-        Tuple[List[torch.Tensor], float]: The collected experience :math:`(s, a, r, s', d, \\log\\pi(a\\mid s))` tuple, and the overall *raw* reward.
+        Trajectory: The collected trajectory.
     '''
     # Parse env
     s_shape = env.observation_space.shape
@@ -914,9 +960,9 @@ def run_episode(
         kernel = kernel.reshape(1, 1, -1)
         r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1)
         ret_length = r_conv.shape[0]
-        return [
+        return Trajectory(
             s[:ret_length], a[:ret_length],
             r_conv, s_prime[model.tau - 1:], d[model.tau - 1:], \
-            log_pi[:ret_length]
-        ], rewards.item()
-    return [s, a, r, s_prime, d, log_pi], rewards.item()
+            log_pi[:ret_length], rewards.item()
+        )
+    return Trajectory(s, a, r, s_prime, d, log_pi, rewards.item())
