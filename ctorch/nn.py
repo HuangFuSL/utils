@@ -432,6 +432,7 @@ class CholeskyTrilLinear(Module):
         out_dim (int): The output matrix dimension.
         bias (bool): Whether to include a bias term.
         eps (float): The small value added to the main diagonal of the matrix
+        clamp_max (float): The maximum value to clamp for the main diagonal of the matrix
         non_neg_func (str | Callable): Element-wise non-negative activation function to use. Should be one of:
 
             * ``softplus``: :math:`f(x) = \\log(1 + \\exp(x))`
@@ -447,7 +448,7 @@ class CholeskyTrilLinear(Module):
     '''
     def __init__(
         self, in_features: int, out_dim: int,
-        bias: bool = True, eps: float = 1e-4,
+        bias: bool = True, eps: float = 1e-4, clamp_max: float | None = None,
         non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus'
     ):
         super().__init__()
@@ -455,6 +456,7 @@ class CholeskyTrilLinear(Module):
         self.in_features = in_features
         self.out_lower = out_dim * (out_dim - 1) // 2
         self.out_dim = out_dim
+        self.clamp_max = clamp_max
 
         if not isinstance(non_neg_func, str):
             self.non_neg_act = non_neg_func
@@ -492,7 +494,10 @@ class CholeskyTrilLinear(Module):
         * Output shape: (\\*, out_dim)
         '''
         diag = self.diag_layer(x)
-        return self.non_neg_act(diag) + self.eps
+        ret = self.non_neg_act(diag) + self.eps
+        if self.clamp_max is not None:
+            ret = torch.clamp(ret, max=self.clamp_max)
+        return ret
 
     def pd(self, x: torch.Tensor) -> torch.Tensor:
         '''
@@ -559,6 +564,7 @@ class GaussianLinear(Module):
         out_features (int): Number of output features.
         bias (bool): Whether to include a bias term.
         eps (float): Epsilon value for ``CholeskyTrilLinear``
+        clamp_max (float): The maximum value to clamp for ``CholeskyTrilLinear``
         non_neg_func (str | Callable): Non-negative mapping for ``CholeskyTrilLinear``
         gaussian_type (MultivariateNormalClass): The constructor of target distribution.
 
@@ -569,7 +575,7 @@ class GaussianLinear(Module):
     '''
     def __init__(
         self, in_features: int, out_features: int,
-        bias: bool = True, eps: float = 1e-4,
+        bias: bool = True, eps: float = 1e-4, clamp_max: float | None = None,
         non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus',
         gaussian_type: MultivariateNormalClass =
             torch.distributions.MultivariateNormal,
@@ -580,7 +586,7 @@ class GaussianLinear(Module):
         self.gaussian_type = gaussian_type
         self.linear_mean = torch.nn.Linear(in_features, out_features, bias)
         self.linear_cov = CholeskyTrilLinear(
-            in_features, out_features, bias, eps, non_neg_func
+            in_features, out_features, bias, eps, clamp_max, non_neg_func
         )
 
     def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
@@ -593,7 +599,7 @@ class GaussianLinear(Module):
         Returns:
             torch.distributions.Distribution: The target distribution.
         '''
-        mean = self.linear_mean(x)
+        mean = self.mean(x)
         cov_tril = self.linear_cov(x)
         return self.gaussian_type(mean, scale_tril=cov_tril)
 
