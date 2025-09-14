@@ -310,6 +310,10 @@ class BaseRLModel(nn.Module, abc.ABC):
         '''
         ...
 
+    @abc.abstractmethod
+    def loss(self) -> torch.Tensor:
+        ...
+
 
 class TargetNetworkMixin(nn.Module):
     '''
@@ -558,11 +562,7 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         raise NotImplementedError('Value networks do not have a policy for selecting actions.')
 
     def td_step(
-        self,
-        state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
-        state_prime: torch.Tensor, is_terminal: torch.Tensor,
-        log_pi: torch.Tensor | None = None,
-        a_prime: torch.Tensor | None = None
+        self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
     ):
         '''
         The loss function for training the value network using the TD loss.
@@ -590,6 +590,7 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
         '''
+        state, action, reward, state_prime, is_terminal, log_pi = trajectory
         current = self(state)
         with torch.no_grad():
             mode = self.target.training
@@ -768,10 +769,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
     # Training
 
     def td_step(
-        self,
-        state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
-        state_prime: torch.Tensor, is_terminal: torch.Tensor,
-        log_pi: torch.Tensor | None = None, a_prime: torch.Tensor | None = None
+        self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
     ):
         '''
         The loss function for training the Q-network using the TD loss.
@@ -800,9 +798,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
         '''
         to = lambda x: x.to(self.device)
-        state, action, reward, state_prime, is_terminal = map(
-            to, (state, action, reward, state_prime, is_terminal)
-        )
+        state, action, reward, state_prime, is_terminal = map(to, trajectory)
         action = action.to(torch.long)
         is_terminal = is_terminal.to(torch.float)
 
