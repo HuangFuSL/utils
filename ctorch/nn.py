@@ -432,8 +432,8 @@ class CholeskyTrilLinear(Module):
         out_dim (int): The output matrix dimension.
         bias (bool): Whether to include a bias term.
         eps (float): The small value added to the main diagonal of the matrix
-        clamp_max (float): The maximum value to clamp for the main diagonal of the matrix
-        non_neg_func (str | Callable): Element-wise non-negative activation function to use. Should be one of:
+        scale (float): The maximum scale of the matrix elements.
+        non_neg_func (str | Callable): Element-wise non-negative activation function on the diagonal elements.
 
             * ``softplus``: :math:`f(x) = \\log(1 + \\exp(x))`
             * ``elu``: :math:`f(x) = ELU(x) + 1`
@@ -448,7 +448,7 @@ class CholeskyTrilLinear(Module):
     '''
     def __init__(
         self, in_features: int, out_dim: int,
-        bias: bool = True, eps: float = 1e-4, clamp_max: float | None = None,
+        bias: bool = True, eps: float = 1e-4, scale: float | None = None,
         non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus'
     ):
         super().__init__()
@@ -456,7 +456,7 @@ class CholeskyTrilLinear(Module):
         self.in_features = in_features
         self.out_lower = out_dim * (out_dim - 1) // 2
         self.out_dim = out_dim
-        self.clamp_max = clamp_max
+        self.scale = scale
 
         if not isinstance(non_neg_func, str):
             self.non_neg_act = non_neg_func
@@ -495,8 +495,8 @@ class CholeskyTrilLinear(Module):
         '''
         diag = self.diag_layer(x)
         ret = self.non_neg_act(diag) + self.eps
-        if self.clamp_max is not None:
-            ret = torch.clamp(ret, max=self.clamp_max)
+        if self.scale is not None:
+            ret = torch.tanh(ret / self.scale) * self.scale
         return ret
 
     def pd(self, x: torch.Tensor) -> torch.Tensor:
@@ -528,7 +528,10 @@ class CholeskyTrilLinear(Module):
         *B, _ = x.shape
         out = torch.diag_embed(self.diag(x))
         if self.lower_layer is not None:
-            out[..., self.indices[0], self.indices[1]] = self.lower_layer(x)
+            ll = self.lower_layer(x)
+            if self.scale is not None:
+                ll = torch.tanh(ll / self.scale) * self.scale
+            out[..., self.indices[0], self.indices[1]] = ll
         return out
 
 
@@ -563,9 +566,10 @@ class GaussianLinear(Module):
         in_features (int): Number of input features.
         out_features (int): Number of output features.
         bias (bool): Whether to include a bias term.
-        eps (float): Epsilon value for ``CholeskyTrilLinear``
-        clamp_max (float): The maximum value to clamp for ``CholeskyTrilLinear``
-        non_neg_func (str | Callable): Non-negative mapping for ``CholeskyTrilLinear``
+        mu_scale (float | None): If not None, the mean value is scaled by a tanh function with the given scale.
+        cov_scale (float): The boundary value for covariance matrix elements.
+        eps (float): Minimum value added to the diagonal of the covariance matrix.
+        non_neg_func (str | Callable): Non-negative mapping of the diagonal elements of the covariance matrix.
         gaussian_type (MultivariateNormalClass): The constructor of target distribution.
 
     Shapes:
@@ -574,8 +578,9 @@ class GaussianLinear(Module):
         * Output shape: (\\*, out_features)
     '''
     def __init__(
-        self, in_features: int, out_features: int,
-        bias: bool = True, eps: float = 1e-4, clamp_max: float | None = None,
+        self, in_features: int, out_features: int, bias: bool = True,
+        mu_scale: float | None = None, Sigma_scale: float | None = None,
+        eps: float = 1e-4,
         non_neg_func: str | Callable[[torch.Tensor], torch.Tensor] = 'softplus',
         gaussian_type: MultivariateNormalClass =
             torch.distributions.MultivariateNormal,
@@ -584,10 +589,19 @@ class GaussianLinear(Module):
         self.in_features = in_features
         self.out_features = out_features
         self.gaussian_type = gaussian_type
+        self.mu_scale = mu_scale
         self.linear_mean = torch.nn.Linear(in_features, out_features, bias)
         self.linear_cov = CholeskyTrilLinear(
-            in_features, out_features, bias, eps, clamp_max, non_neg_func
+            in_features, out_features, bias, eps, Sigma_scale, non_neg_func
         )
+
+        torch.nn.init.xavier_normal_(self.linear_mean.weight, 0.1)
+        torch.nn.init.zeros_(self.linear_mean.bias)
+        torch.nn.init.xavier_normal_(self.linear_cov.diag_layer.weight, 0.1)
+        torch.nn.init.constant_(self.linear_cov.diag_layer.bias, -1)
+        if self.linear_cov.lower_layer is not None:
+            torch.nn.init.xavier_normal_(self.linear_cov.lower_layer.weight, 0.1)
+            torch.nn.init.zeros_(self.linear_cov.lower_layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.distributions.Distribution:
         '''
@@ -629,7 +643,10 @@ class GaussianLinear(Module):
         * Input shape: (\\*, in_features)
         * Output shape: (\\*, out_features)
         '''
-        return self.linear_mean(x)
+        if self.mu_scale is None:
+            return self.linear_mean(x)
+        scale = self.mu_scale
+        return torch.tanh(self.linear_mean(x) / scale) * scale
 
 
 class RotaryTemporalEmbedding(Module):
