@@ -362,10 +362,10 @@ class TargetNetworkMixin(nn.Module):
             self._target.load_state_dict(self.state_dict(), strict=False)
             return
         # Polyak averaging
-        for p_t, p in zip(self._target.parameters(), self.parameters(), strict=True):
+        for p_t, p in zip(self._target.parameters(), self.parameters()):
             p_t.mul_(1.0 - weight).add_(p, alpha=weight)
 
-        for b_t, b in zip(self._target.buffers(), self.buffers(), strict=True):
+        for b_t, b in zip(self._target.buffers(), self.buffers()):
             if torch.is_floating_point(b_t) and torch.is_floating_point(b):
                 b_t.mul_(1.0 - weight).add_(b, alpha=weight)
             else:
@@ -414,7 +414,8 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
         dist = self(state)
         if dist.has_rsample:
             ret = dist.rsample()
-        ret = dist.sample()
+        else:
+            ret = dist.sample()
         return ret, dist.log_prob(ret)
 
     def policy_parameters(self) -> Iterator[torch.nn.Parameter]:
