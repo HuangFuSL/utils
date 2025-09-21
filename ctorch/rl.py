@@ -7,7 +7,7 @@ import abc
 import copy
 import dataclasses
 import functools
-from typing import Any, Callable, ClassVar, Dict, Iterator, List, MutableMapping, Tuple
+from typing import Any, Callable, ClassVar, Dict, Iterator, List, MutableMapping, Self, Tuple
 
 import gymnasium
 import torch
@@ -322,7 +322,7 @@ class TargetNetworkMixin(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self._target: nn.Module | None = None
+        self._target: Self | None = None
 
     def setup_target(self):
         '''
@@ -335,12 +335,12 @@ class TargetNetworkMixin(nn.Module):
         self._target.setup_target = lambda: None  # Disable further calls
 
     @property
-    def target(self):
+    def target(self) -> Self:
         '''
         The target network for the Q-learning algorithm. Used in double DQN. If not set, the current network is used.
 
         Returns:
-            BaseQNetwork: The target network or self if not set.
+            Module: The target network or self if not set.
         '''
         if self._target is not None:
             return self._target
