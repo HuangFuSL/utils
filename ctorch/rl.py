@@ -518,30 +518,24 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         TargetNetworkMixin.__init__(self)
         BaseRLModel.__init__(self, shape_dim=shape_dim, gamma=gamma, tau=tau)
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        fwd_overridden = cls.forward is not BaseValueNetwork.forward
-        v_overridden = getattr(cls, "V", BaseValueNetwork.V) is not BaseValueNetwork.V
-        if not (fwd_overridden or v_overridden):
-            raise TypeError(
-                f'{cls.__name__} must override `forward` OR `V`.'
-            )
-
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    @abc.abstractmethod
+    def forward(self, state: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
         '''
-        Returns the value function V(s) for the given state.
+        Forward pass of the value network. The implementation should either implement the state-value function V(s) or the action-value function Q(s, a).
 
         Args:
             state (torch.Tensor): The input state tensor.
+            action (torch.Tensor | None): The input action tensor. If provided, the network should compute the action-value function Q(s, a). If not provided, the network should compute the state-value function V(s).
 
         Returns:
             torch.Tensor: The value function V(s) for the given state.
 
         Shapes:
             - state: (\\*, (state_dims,))
+            - action: (\\*, (action_dims,)), (\\*), or None
             - output: (\\*)
         '''
-        return self.V(state)
+        raise NotImplementedError
 
     def V(self, state: torch.Tensor) -> torch.Tensor:
         '''
@@ -559,138 +553,24 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         '''
         return self(state)
 
-    def act(self, state: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError('Value networks do not have a policy for selecting actions.')
-
-    def td_step(
-        self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
-    ):
-        '''
-        The loss function for training the value network using the TD loss.
-
-        .. math::
-            \\begin{aligned}
-                \\text{LHS} &= V(s) \\\\
-                \\text{RHS} &= \\left\\{\\begin{aligned}
-                    & r + V(s') & \\text{if not terminal} \\\\
-                    & r & \\text{if terminal}
-                \\end{aligned}\\right.
-            \\end{aligned}
-
-        The LHS and RHS can be optimized using ``MSELoss`` or ``SmoothL1Loss``.
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-            action (torch.Tensor): Not used.
-            reward (torch.Tensor): The reward tensor over :math:`\\tau` steps.
-            state_prime (torch.Tensor): The next state tensor.
-            is_terminal (torch.Tensor): The terminal state indicator tensor.
-            log_pi (torch.Tensor | None): Not used.
-            a_prime (torch.Tensor | None): Not used.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
-        '''
-        state, action, reward, state_prime, is_terminal, log_pi = trajectory
-        current = self(state)
-        with torch.no_grad():
-            mode = self.target.training
-            self.target.eval()
-            target = reward + (self.gamma ** self.tau) * self.target(state_prime) * (1 - is_terminal)
-            self.target.train(mode)
-        return current, target.detach()
-
-class BaseQNetwork(BaseValueNetwork, abc.ABC):
-    '''
-    Abstract base class for Q-Networks.
-
-    One should either implement the ``forward`` method, or both `Q` and `action_Q` methods.
-
-    Args:
-        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
-        num_actions (int): The number of actions the agent can take.
-        gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
-        tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
-    '''
-
-    def __init__(self, shape_dim: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
-        super(BaseQNetwork, self).__init__(shape_dim=shape_dim, gamma=gamma, tau=tau)
-        if num_actions <= 0:
-            raise ValueError('num_actions must be positive.')
-
-        self.num_actions = num_actions
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        fwd_overridden = cls.forward is not BaseQNetwork.forward
-        q_overridden = getattr(cls, "Q", BaseQNetwork.Q) is not BaseQNetwork.Q
-        a_overridden = getattr(cls, "action_Q", BaseQNetwork.action_Q) is not BaseQNetwork.action_Q
-        if not (fwd_overridden or (q_overridden and a_overridden)):
-            raise TypeError(
-                f'{cls.__name__} must override `forward` OR both `Q` and `action_Q`.'
-            )
-
-    # Value functions
-
-    def Q(self, state: torch.Tensor) -> torch.Tensor:
-        '''
-        Compute the action-value function Q(s, a) for all actions a given state s.
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-
-        Returns:
-            torch.Tensor: The action-value function Q(s, a) for all actions a.
-
-        Shapes:
-            - state: (*, (state_dims,))
-            - output: (*, num_actions)
-        '''
-        return self(state)
-
-    def action_Q(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+    def Q(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         '''
         Compute the action-value function Q(s, a) for a given state s and action a.
 
         Args:
             state (torch.Tensor): The input state tensor.
             action (torch.Tensor): The input action tensor.
-
         Returns:
             torch.Tensor: The action-value function Q(s, a) for a given state s and action a.
 
         Shapes:
             - state: (\\*, (state_dims,))
-            - action: (\\*)
+            - action: (\\*, (action_dims,)) or (\\*)
             - output: (\\*)
         '''
-        action = action.to(torch.long)
         return self(state, action)
 
-    def V(self, state: torch.Tensor) -> torch.Tensor:
-        return self.Q(state).amax(dim=-1)
-
-    def A(self, state: torch.Tensor) -> torch.Tensor:
-        '''
-        Compute the advantage function A(s, a) for a given state s and action a.
-
-        .. math::
-            A(s, a) = Q(s, a) - V(s)
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-
-        Returns:
-            torch.Tensor: The advantage function A(s, a) for a given state s and all actions.
-
-        Shapes:
-            - state: (\\*, (state_dims,))
-            - action: (\\*)
-            - output: (\\*)
-        '''
-        return self.Q(state) - self.V(state)
-
-    def action_A(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+    def A(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         '''
         Compute the advantage function A(s, a) for a given state s and action a.
 
@@ -709,8 +589,106 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             - action: (\\*)
             - output: (\\*)
         '''
-        action = action.to(torch.long)
-        return self.action_Q(state, action) - self.V(state)
+        return self.Q(state, action) - self.V(state)
+
+    def act(self, state: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError('Value networks do not have a policy for selecting actions.')
+
+    def td_step(
+        self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
+    ):
+        '''
+        The loss function for training the value network using the TD loss. If a_prime is provided, the action-value function Q(s, a) is used. Otherwise, the state-value function V(s) is used.
+
+        .. math::
+            \\begin{aligned}
+                \\text{LHS} &= V(s) \\\\
+                \\text{RHS} &= \\left\\{\\begin{aligned}
+                    & r + V(s') & \\text{if not terminal} \\\\
+                    & r & \\text{if terminal}
+                \\end{aligned}\\right.
+            \\end{aligned}
+
+        The LHS and RHS can be optimized using ``MSELoss`` or ``SmoothL1Loss``.
+
+        Args:
+            trajectory (Trajectory): A batch of trajectories.
+            a_prime (torch.Tensor | None): The next action tensor. If provided, the action-value function Q(s, a) is used. If not provided, the state-value function V(s) is used.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
+        '''
+        state, action, reward, state_prime, is_terminal, log_pi = trajectory
+        current = self.V(state) if a_prime is None else self.Q(state, action)
+        # Here we cannot use forward() because Q and V may be overridden separately.
+        with torch.no_grad():
+            mode = self.target.training
+            self.target.eval()
+            next_step = self.V(state_prime) if a_prime is None else self.Q(state_prime, a_prime)
+            target = reward + (self.gamma ** self.tau) * next_step * (1 - is_terminal)
+            self.target.train(mode)
+        return current, target.detach()
+
+class BaseQNetwork(BaseValueNetwork, abc.ABC):
+    '''
+    Abstract base class for DQN with discrete action space.
+
+    One should either implement the ``forward`` method to return Q-values for all actions or specified actions.
+
+    Args:
+        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        num_actions (int): The number of actions the agent can take.
+        gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
+        tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
+    '''
+
+    def __init__(self, shape_dim: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
+        super(BaseQNetwork, self).__init__(shape_dim=shape_dim, gamma=gamma, tau=tau)
+        if num_actions <= 0:
+            raise ValueError('num_actions must be positive.')
+
+        self.num_actions = num_actions
+
+    # Value functions
+
+    def Q_all(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the action-value function Q(s, a) for all actions a given state s.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The action-value function Q(s, a) for all actions a.
+
+        Shapes:
+            - state: (*, (state_dims,))
+            - output: (*, num_actions)
+        '''
+        return self(state)
+
+    def V(self, state: torch.Tensor) -> torch.Tensor:
+        return self.Q_all(state).amax(dim=-1)
+
+    def A_all(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the advantage function A(s, a) for a given state s and action a.
+
+        .. math::
+            A(s, a) = Q(s, a) - V(s)
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The advantage function A(s, a) for a given state s and all actions.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - action: (\\*)
+            - output: (\\*)
+        '''
+        return self.Q_all(state) - self.V(state)
 
     @torch.no_grad()
     def act(
@@ -765,57 +743,19 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             torch.Tensor: The selected actions.
         '''
         state = state.to(self.device)
-        return torch.argmax(self.Q(state), dim=-1)
+        return torch.argmax(self.Q_all(state), dim=-1)
 
     # Training
 
     def td_step(
         self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
     ):
-        '''
-        The loss function for training the Q-network using the TD loss.
-
-        .. math::
-            \\begin{aligned}
-                \\text{LHS} &= Q(s, a) \\\\
-                \\text{RHS} &= \\left\\{\\begin{aligned}
-                    & r + Q_{\\text{target}}(s', \\arg\\max_{a'} Q(s', a')) & \\text{if not terminal} \\\\
-                    & r & \\text{if terminal}
-                \\end{aligned}\\right.
-            \\end{aligned}
-
-        The LHS and RHS can be optimized using ``MSELoss`` or ``SmoothL1Loss``.
-
-        Args:
-            state (torch.Tensor): The input state tensor.
-            action (torch.Tensor): The input action tensor.
-            reward (torch.Tensor): The reward tensor over :math:`\\tau` steps.
-            state_prime (torch.Tensor): The next state tensor.
-            is_terminal (torch.Tensor): The terminal state indicator tensor.
-            log_pi (torch.Tensor): Not used.
-            a_prime (torch.Tensor | None): The next action tensor for SARSA. If None, the action is selected using the exploitation policy (DQN).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
-        '''
-        to = lambda x: x.to(self.device)
-        state, action, reward, state_prime, is_terminal = map(to, trajectory)
-        action = action.to(torch.long)
-        is_terminal = is_terminal.to(torch.float)
-
         if a_prime is None:
-            a_prime = self.exploit(state_prime)
-        with torch.no_grad():
-            mode = self.target.training
-            self.target.eval()
-            target = reward + (self.gamma ** self.tau) \
-                * self.target(state_prime, a_prime) * (1 - is_terminal)
-            self.target.train(mode)
-
-        current = self(state, action)
-        return current, target
+            a_prime = self.exploit(trajectory.next_state)
+        return super().td_step(trajectory, a_prime)
 
     # Forward
+    @abc.abstractmethod
     def forward(self, state: torch.Tensor, action: torch.Tensor | None = None):
         '''
         Returns the Q-values for the given state and action.
@@ -827,10 +767,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         Returns:
             torch.Tensor: The Q-values for the given state and action. If action is None, returns the Q-value over all actions.
         '''
-        if action is None:
-            return self.Q(state)
-        action = action.to(torch.long)
-        return self.action_Q(state, action)
+        raise NotImplementedError
 
 def torch_step(env: gymnasium.Env, device: torch.device | str = 'cpu'):
     '''
