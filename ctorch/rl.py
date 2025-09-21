@@ -279,20 +279,20 @@ class BaseRLModel(nn.Module, abc.ABC):
     Abstract base class for reinforcement learning models.
 
     Args:
-        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        state_shape (Tuple[int, ...]): The shape dimensions of the input state.
         gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
         tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
     '''
-    def __init__(self, shape_dim: Tuple[int, ...] | int, *, gamma: float = 0.99, tau: int = 1):
+    def __init__(self, state_shape: Tuple[int, ...] | int, *, gamma: float = 0.99, tau: int = 1):
         super().__init__()
-        if isinstance(shape_dim, int):
-            shape_dim = (shape_dim,)
+        if isinstance(state_shape, int):
+            state_shape = (state_shape,)
         if (
-            (isinstance(shape_dim, int) and shape_dim <= 0) or
-            (isinstance(shape_dim, tuple) and any(d <= 0 for d in shape_dim))
+            (isinstance(state_shape, int) and state_shape <= 0) or
+            (isinstance(state_shape, tuple) and any(d <= 0 for d in state_shape))
         ):
-            raise ValueError('shape_dim must be positive.')
-        self.shape_dim = shape_dim
+            raise ValueError('state_shape must be positive.')
+        self.state_shape = state_shape
         self.gamma = gamma
         self.tau = tau
 
@@ -378,16 +378,16 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
     Abstract base class for policy-based reinforcement learning models.
 
     Args:
-        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        state_shape (Tuple[int, ...]): The shape dimensions of the input state.
         gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
         tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
     '''
     def __init__(
         self,
-        state_dim: Tuple[int, ...] | int,
+        state_shape: Tuple[int, ...] | int,
         *, gamma: float = 0.99, tau: int = 1
     ):
-        super().__init__(state_dim, gamma=gamma, tau=tau)
+        super().__init__(state_shape, gamma=gamma, tau=tau)
 
     def setup_target(self):
         try:
@@ -510,13 +510,13 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
     One should either implement the ``forward`` method, or `V` method.
 
     Args:
-        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        state_shape (Tuple[int, ...]): The shape dimensions of the input state.
         gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
         tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
     '''
-    def __init__(self, shape_dim: Tuple[int, ...] | int, *, gamma: float = 0.99, tau: int = 1):
+    def __init__(self, state_shape: Tuple[int, ...] | int, *, gamma: float = 0.99, tau: int = 1):
         TargetNetworkMixin.__init__(self)
-        BaseRLModel.__init__(self, shape_dim=shape_dim, gamma=gamma, tau=tau)
+        BaseRLModel.__init__(self, state_shape=state_shape, gamma=gamma, tau=tau)
 
     @abc.abstractmethod
     def forward(self, state: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
@@ -636,14 +636,14 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
     One should either implement the ``forward`` method to return Q-values for all actions or specified actions.
 
     Args:
-        shape_dim (Tuple[int, ...]): The shape dimensions of the input state.
+        state_shape (Tuple[int, ...]): The shape dimensions of the input state.
         num_actions (int): The number of actions the agent can take.
         gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
         tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
     '''
 
-    def __init__(self, shape_dim: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
-        super(BaseQNetwork, self).__init__(shape_dim=shape_dim, gamma=gamma, tau=tau)
+    def __init__(self, state_shape: Tuple[int, ...] | int, num_actions: int, *, gamma: float = 0.99, tau: int = 1):
+        super(BaseQNetwork, self).__init__(state_shape=state_shape, gamma=gamma, tau=tau)
         if num_actions <= 0:
             raise ValueError('num_actions must be positive.')
 
@@ -711,7 +711,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
             if torch.rand(()) < eps:
                 ret = A
             ret = B
-        unif = torch.rand(state.shape[:-len(self.shape_dim)], device=self.device)
+        unif = torch.rand(state.shape[:-len(self.state_shape)], device=self.device)
         ret = torch.where(unif < eps, A, B)
         prob = (eps / self.num_actions) + (1 - eps) * (ret == B).to(torch.float32)
         return ret, prob.log()
@@ -728,7 +728,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         Returns:
             torch.Tensor: The selected actions.
         '''
-        target_shape = state.shape[:-len(self.shape_dim)]
+        target_shape = state.shape[:-len(self.state_shape)]
         return torch.randint(self.num_actions, target_shape, device=self.device)
 
     @torch.no_grad()
