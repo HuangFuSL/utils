@@ -898,7 +898,7 @@ class FeatureEmbedding(Module):
         # Flatten the last dim
         *shape, num_features = x.shape
         x = x.view(*shape, -1)
-        x += self.offset.expand(*shape, -1)  # Add offset to each feature's index
+        x = x + self.offset.expand(*shape, -1)  # Add offset to each feature's index
 
         # Get embeddings
         embeddings = self.embedding(x)
