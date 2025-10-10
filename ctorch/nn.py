@@ -890,8 +890,8 @@ class FeatureEmbedding(Module):
             raise ValueError('Input tensor must have at least 2 dimensions.')
         if x.shape[-1] != len(self.num_features):
             raise ValueError(f'Input tensor must have last dimension of size {len(self.num_features)}, but got {x.shape[-1]}.')
-        if x.dtype != torch.long:
-            raise TypeError('Input tensor must be of type torch.long.')
+        if x.dtype not in (torch.int, torch.long):
+            raise TypeError('Input tensor must be of type torch.int/long.')
         if not torch.all((x >= 0).all(dim=-1) & (x < self.num_features_tensor).all(dim=-1)):
             raise ValueError('Input tensor contains out-of-bound indices.')
 
