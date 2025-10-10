@@ -8,6 +8,27 @@ import torch.linalg
 
 from . import ops
 
+def logit_product(
+    x: torch.Tensor, y: torch.Tensor
+) -> torch.Tensor:
+    '''
+    Calculate the logit of the product of two probabilities given their logits.
+
+    .. math::
+        \\sigma^{-1}(\\sigma(x) \\cdot \\sigma(y)) = x + y - \\log(1 + e^x + e^y)
+
+    Args:
+        x (torch.Tensor): Logit of the first probability.
+        y (torch.Tensor): Logit of the second probability.
+
+    Returns:
+        torch.Tensor: Logit of the product of the two probabilities.
+    '''
+    logaddexp = torch.logaddexp(x, y)
+    return x + y - torch.logaddexp(
+        logaddexp, logaddexp.new_zeros(logaddexp.size())
+    )
+
 def log_norm_pdf(
     x: torch.Tensor, mean: torch.Tensor, Sigma: torch.Tensor | None = None,
     logSigma: torch.Tensor | None = None, batch_first: bool | None = None

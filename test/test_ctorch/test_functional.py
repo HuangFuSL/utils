@@ -4,7 +4,7 @@ import unittest
 import sklearn.metrics
 import torch
 
-from ctorch.functional import log_norm_pdf, rbf_kernel, mmd_distance, wasserstein_distance
+from ctorch.functional import log_norm_pdf, rbf_kernel, mmd_distance, wasserstein_distance, logit_product
 
 SCIPY_AVAILABLE = importlib.util.find_spec("scipy") is not None and \
     importlib.util.find_spec("numpy") is not None
@@ -12,6 +12,18 @@ if SCIPY_AVAILABLE:
     import numpy as np
     from scipy.stats import multivariate_normal as mvn
 
+class TestLogitProduct(unittest.TestCase):
+    def setUp(self) -> None:
+        self.N, self.D = 4, 3
+
+        self.x = torch.randn(self.N, self.D)
+        self.y = torch.randn(self.N, self.D)
+
+    def test_logit_product(self):
+        new_prob = torch.sigmoid(self.x) * torch.sigmoid(self.y)
+        new_logit = torch.log(new_prob) - torch.log1p(-new_prob)
+        res = logit_product(self.x, self.y)
+        self.assertTrue(torch.allclose(res, new_logit))
 
 class TestLogNormPdf(unittest.TestCase):
     def setUp(self):
