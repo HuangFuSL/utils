@@ -84,35 +84,37 @@ def _build_parser(*parsers: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(parents=parsers)
     parser.add_argument(
         '--config',
-        type=str, default='',
+        type=str, default='', nargs='*',
         help='Path to the configuration file'
     )
     return parser
 
 def _handle_config_file(ns: argparse.Namespace) -> Dict[str, Any]:
     if ns.config:
-        with open(ns.config, 'r') as f:
-            content = f.read()
-        suffix = os.path.splitext(ns.config)[1].lower()
-        if suffix in ('.json',):
-            config_data = json.loads(content)
-        elif suffix in ('.yaml', '.yml'):
-            if not YAML_AVAILABLE:
-                raise ImportError(
-                    'YAML support is not available. Install PyYAML to use YAML files.')
-            config_data = yaml.load(content, Loader=yaml.SafeLoader)
-        elif suffix in ('.toml',):
-            if not TOML_AVAILABLE:
-                raise ImportError(
-                    'TOML support is not available. Install tomllib to use TOML files.')
-            config_data = tomllib.loads(content)
-        else:
-            raise ValueError(
-                'Unsupported config file format. Use .json, .yaml, or .toml.')
-        if not isinstance(config_data, dict):
-            raise ValueError('Config file must contain a dictionary.')
-        # Override all all command line arguments with config file values
-        kw = config_data
+        kw = {}
+        for path in ns.config:
+            with open(path, 'r') as f:
+                content = f.read()
+            suffix = os.path.splitext(path)[1].lower()
+            if suffix in ('.json',):
+                config_data = json.loads(content)
+            elif suffix in ('.yaml', '.yml'):
+                if not YAML_AVAILABLE:
+                    raise ImportError(
+                        'YAML support is not available. Install PyYAML to use YAML files.')
+                config_data = yaml.load(content, Loader=yaml.SafeLoader)
+            elif suffix in ('.toml',):
+                if not TOML_AVAILABLE:
+                    raise ImportError(
+                        'TOML support is not available. Install tomllib to use TOML files.')
+                config_data = tomllib.loads(content)
+            else:
+                raise ValueError(
+                    'Unsupported config file format. Use .json, .yaml, or .toml.')
+            if not isinstance(config_data, dict):
+                raise ValueError('Config file must contain a dictionary.')
+            # Override all all command line arguments with config file values
+            kw |= config_data
         return kw
     return {}
 
