@@ -844,8 +844,8 @@ class FeatureEmbedding(Module):
         self.register_buffer('num_features_tensor', num_features_tensor)
         self.embedding_size = embedding_size
 
-        _total_embeddings = sum(num_features)
-        _max_embedding_size = max(embedding_size)
+        _total_embeddings = sum(num_features + [0])
+        _max_embedding_size = max(embedding_size + [0])
         self.embedding = torch.nn.Embedding(
             num_embeddings=_total_embeddings,
             embedding_dim=_max_embedding_size,
