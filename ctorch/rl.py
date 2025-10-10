@@ -624,7 +624,8 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         with torch.no_grad():
             mode = self.target.training
             self.target.eval()
-            next_step = self.V(state_prime) if a_prime is None else self.Q(state_prime, a_prime)
+            next_step = self.target.V(state_prime) if a_prime is None \
+                else self.target.Q(state_prime, a_prime)
             target = reward + (self.gamma ** self.tau) * next_step * (1 - is_terminal)
             self.target.train(mode)
         return current, target.detach()
