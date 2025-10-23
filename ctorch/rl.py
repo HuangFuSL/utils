@@ -814,6 +814,205 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         '''
         raise NotImplementedError
 
+class BaseDistributionalQNetwork(BaseQNetwork, abc.ABC):
+    '''
+    Abstract base class for Distributional DQN with discrete action space.
+
+    One should implement the ``forward`` method to return un-softmaxed logits or log-softmaxed logits for all actions or specified actions, in shape (..., num_actions, num_atoms) or (..., num_atoms).
+
+    Args:
+        state_shape (Tuple[int, ...]): The shape dimensions of the input state.
+        num_actions (int): The number of actions the agent can take.
+        atoms (List[int | float] | torch.Tensor): The support of the value distribution.
+        gamma (float, optional): The discount factor for future rewards, defaults to 0.99.
+        tau (int, optional): The number of steps to look ahead for target updates, defaults to 1.
+    '''
+
+    def __init__(
+        self,
+        state_shape: Tuple[int, ...] | int,
+        num_actions: int,
+        atoms: List[int | float] | torch.Tensor,
+        *, gamma: float = 0.99, tau: int = 1
+    ):
+        super(BaseDistributionalQNetwork, self).__init__(
+            state_shape=state_shape, num_actions=num_actions, gamma=gamma, tau=tau
+        )
+        self.atoms: torch.Tensor
+        self.register_buffer(
+            'atoms', torch.as_tensor(atoms, dtype=torch.float32).sort()[0],
+        )
+        self.num_atoms = self.atoms.numel()
+        if self.num_atoms < 2:
+            raise ValueError('atoms must contain at least two elements.')
+
+    def Q_all_dist(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the action-value distribution Q(s, a) for all actions a given state s.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+        Returns:
+            torch.Tensor: The action-value distribution Q(s, a) for all actions a.
+
+        Shapes:
+            - state: (*, (state_dims,))
+            - output: (*, num_actions, num_atoms)
+        '''
+        return torch.softmax(self(state), dim=-1)
+
+    def Q_all(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the action-value function Q(s, a) for all actions a given state s.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+
+        Returns:
+            torch.Tensor: The action-value function Q(s, a) for all actions a.
+
+        Shapes:
+            - state: (*, (state_dims,))
+            - output: (*, num_actions)
+        '''
+        return torch.einsum('...an,n->...a', self.Q_all_dist(state), self.atoms)
+
+    def Q_dist(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the action-value distribution Q(s, a) for a given state s and action a.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+            action (torch.Tensor): The input action tensor.
+        Returns:
+            torch.Tensor: The action-value distribution Q(s, a) for a given state s and action a.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - action: (\\*)
+            - output: (\\*, num_atoms)
+        '''
+        return torch.softmax(self(state, action), dim=-1)
+
+    def Q(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the action-value function Q(s, a) for a given state s and action a.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+            action (torch.Tensor): The input action tensor.
+        Returns:
+            torch.Tensor: The action-value function Q(s, a) for a given state s and action a.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - action: (\\*)
+            - output: (\\*)
+        '''
+        q_dist = self.Q_dist(state, action)
+        return torch.einsum('...n,n->...', q_dist, self.atoms)
+
+    def V_dist(self, state: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the state-value distribution V(s) for a given state s.
+
+        Args:
+            state (torch.Tensor): The input state tensor.
+        Returns:
+            torch.Tensor: The state-value distribution V(s) for a given state s.
+
+        Shapes:
+            - state: (\\*, (state_dims,))
+            - output: (\\*, num_atoms)
+        '''
+        q_all_dist = self.Q_all_dist(state)
+        B = q_all_dist.shape[:-2]
+        q_values = torch.einsum('...an,n->...a', q_all_dist, self.atoms)
+        idxs = torch.argmax(q_values, dim=-1, keepdim=True).unsqueeze(-1).expand(*B, 1, self.num_atoms)
+        v_dist = q_all_dist.gather(-2, idxs).squeeze(-2)
+        return v_dist
+
+    def _td_target(
+        self, r: torch.Tensor, q: torch.Tensor, is_terminal: torch.Tensor,
+        softmax: bool = True, eps: float = 1e-8
+    ) -> torch.Tensor:
+        '''
+        Compute the transformed distribution :math:`r + \\gamma q` over the original support using linear projection.
+
+        Args:
+            q (torch.Tensor): The second distribution tensor of shape (..., num_atoms).
+            r (torch.Tensor): The reward tensor of shape (...,).
+            is_terminal (torch.Tensor): The terminal state indicator tensor of shape (...,).
+            softmax (bool, optional): Whether to apply softmax to the input distributions. Defaults to True.
+            eps (float, optional): A small value to avoid log(0). Defaults to 1e-8.
+
+        Returns:
+            torch.Tensor: The projected distribution tensor of shape (..., num_atoms).
+        '''
+        # Map r + gamma * q to the support of p using projection
+        B, N = r.shape, self.atoms.numel()
+        B_ones = [1] * len(B)
+
+        inf = torch.tensor(float('inf'), device=q.device).view(1)
+        atom = torch.cat([-inf, self.atoms, inf], dim=0)  # (num_atoms + 2,)
+        gamma = (self.gamma ** self.tau * (1.0 - is_terminal)).unsqueeze(-1)
+        q_field = r.unsqueeze(-1) + gamma * self.atoms.view(*B_ones, -1)
+
+        if not softmax:
+            one = torch.tensor(1.0, device=q.device)
+            if torch.any(q < 0) or torch.any(q > 1) or \
+                not torch.allclose(q.sum(dim=-1), one):
+                raise ValueError('Invalid probability distributions.')
+        q_prob_old = torch.softmax(q, dim=-1) if softmax else q
+
+        q_prob = torch.zeros_like(q_prob_old)
+        bucket_width = torch.diff(atom)  # N + 1 bins
+        bucket_idx = torch.bucketize(q_field, atom, right=True) - 1 # 0..N
+        # Here left_bucket_idx does not count the boundary inf
+
+        right_bar_weight = (
+            q_field - atom[bucket_idx]
+        ) / bucket_width[bucket_idx]
+        right_bar_weight = right_bar_weight.nan_to_num(1.0)  # inf / inf = nan case
+        left_bar_weight = 1.0 - right_bar_weight
+
+        q_prob.scatter_add_(
+            -1, (bucket_idx - 1).clamp_min(0), q_prob_old * left_bar_weight
+        )
+        q_prob.scatter_add_(
+            -1, bucket_idx.clamp_max(N - 1), q_prob_old * right_bar_weight
+        )
+        q_prob = q_prob.clamp_min(eps)
+        q_prob /= q_prob.sum(dim=-1, keepdim=True)
+        q_prob = q_prob.detach()
+
+        return q_prob
+
+    def _td_step(
+        self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        '''
+        Returns the current distribution log probability and the TD target distribution log probability for the given trajectory.
+
+        Args:
+            trajectory (Trajectory): A batch of trajectories.
+            a_prime (torch.Tensor | None): The next action tensor. If provided, the model behaves like SARSA. If not provided, it behaves like Q-learning.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The current distribution log probability and the TD target distribution log probability.
+        '''
+        state, action, reward, state_prime, is_terminal, log_pi = trajectory
+        current_logits = self(state, action).log_softmax(dim=-1)
+        with torch.no_grad():
+            mode = self.target.training
+            self.target.eval()
+            if a_prime is None:
+                a_prime = self.exploit(state_prime)
+            next_value = self.target(state_prime, a_prime)
+            td_target_dist = self._td_target(reward, next_value, is_terminal)
+            self.target.train(mode)
+        return current_logits, td_target_dist.log()
+
 def torch_step(env: gymnasium.Env, device: torch.device | str = 'cpu'):
     '''
     A wrapper for the environment step function to convert actions from torch tensors and results to torch tensors.
