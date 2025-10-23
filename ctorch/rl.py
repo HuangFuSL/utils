@@ -332,6 +332,8 @@ class TargetNetworkMixin(nn.Module):
             return
         self._target = copy.deepcopy(self)
         self._target.requires_grad_(False)
+        self._target.eval()
+        self._target._target = None  # Avoid nested targets
         self._target.setup_target = lambda: None  # Disable further calls
 
     @property
@@ -345,6 +347,16 @@ class TargetNetworkMixin(nn.Module):
         if self._target is not None:
             return self._target
         return self
+
+    @torch.no_grad()
+    def copy_params(self, src: torch.Tensor | None, tgt: torch.Tensor | None, weight: float = 1.0):
+        if src is None or tgt is None or \
+            tgt.shape != src.shape or tgt.dtype != src.dtype:
+            return
+        if torch.is_floating_point(tgt):
+            tgt.data.mul_(1.0 - weight).add_(src.data, alpha=weight)
+        else:
+            tgt.data.copy_(src.data)
 
     @torch.no_grad()
     def update_target(self, weight: float = 1.0):
@@ -362,14 +374,17 @@ class TargetNetworkMixin(nn.Module):
             self._target.load_state_dict(self.state_dict(), strict=False)
             return
         # Polyak averaging
-        for p_t, p in zip(self._target.parameters(), self.parameters()):
-            p_t.mul_(1.0 - weight).add_(p, alpha=weight)
+        src_params = dict(self.named_parameters(remove_duplicate=False))
+        tgt_params = dict(self._target.named_parameters(remove_duplicate=False))
+        for src_name, src_param in src_params.items():
+            tgt_param = tgt_params.get(src_name, None)
+            self.copy_params(src_param, tgt_param, weight=weight)
 
-        for b_t, b in zip(self._target.buffers(), self.buffers()):
-            if torch.is_floating_point(b_t) and torch.is_floating_point(b):
-                b_t.mul_(1.0 - weight).add_(b, alpha=weight)
-            else:
-                b_t.copy_(b)
+        src_buffers = dict(self.named_buffers(remove_duplicate=False))
+        tgt_buffers = dict(self._target.named_buffers(remove_duplicate=False))
+        for src_name, src_buffer in src_buffers.items():
+            tgt_buffer = tgt_buffers.get(src_name, None)
+            self.copy_params(src_buffer, tgt_buffer, weight=weight)
         self.target.requires_grad_(False)
 
 
