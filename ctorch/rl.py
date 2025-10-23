@@ -609,8 +609,46 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
     def act(self, state: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError('Value networks do not have a policy for selecting actions.')
 
-    def td_step(
+    def _td_step(
         self, trajectory: Trajectory, a_prime: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        state, action, reward, state_prime, is_terminal, log_pi = trajectory
+        current = self.V(state) if a_prime is None else self.Q(state, action)
+        with torch.no_grad():
+            mode = self.target.training
+            self.target.eval()
+            next_step = self.target.V(state_prime) if a_prime is None \
+                else self.target.Q(state_prime, a_prime)
+            target = reward + (self.gamma ** self.tau) * next_step * (1 - is_terminal)
+            self.target.train(mode)
+        return current, target.detach()
+
+    def value_td_step(self, trajectory: Trajectory):
+        '''
+        The loss function for training the value network using the TD loss. If a_prime is provided, the action-value function Q(s, a) is used. Otherwise, the state-value function V(s) is used.
+
+        .. math::
+            \\begin{aligned}
+                \\text{LHS} &= V(s) \\\\
+                \\text{RHS} &= \\left\\{\\begin{aligned}
+                    & r + V(s') & \\text{if not terminal} \\\\
+                    & r & \\text{if terminal}
+                \\end{aligned}\\right.
+            \\end{aligned}
+
+        The LHS and RHS can be optimized using ``MSELoss`` or ``SmoothL1Loss``.
+
+        Args:
+            trajectory (Trajectory): A batch of trajectories.
+            a_prime (torch.Tensor | None): The next action tensor. If provided, the action-value function Q(s, a) is used. If not provided, the state-value function V(s) is used.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
+        '''
+        return self._td_step(trajectory, a_prime=None)
+
+    def action_td_step(
+        self, trajectory: Trajectory, a_prime: torch.Tensor
     ):
         '''
         The loss function for training the value network using the TD loss. If a_prime is provided, the action-value function Q(s, a) is used. Otherwise, the state-value function V(s) is used.
@@ -633,17 +671,7 @@ class BaseValueNetwork(BaseRLModel, TargetNetworkMixin):
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: The LHS and RHS of the TD loss.
         '''
-        state, action, reward, state_prime, is_terminal, log_pi = trajectory
-        current = self.V(state) if a_prime is None else self.Q(state, action)
-        # Here we cannot use forward() because Q and V may be overridden separately.
-        with torch.no_grad():
-            mode = self.target.training
-            self.target.eval()
-            next_step = self.target.V(state_prime) if a_prime is None \
-                else self.target.Q(state_prime, a_prime)
-            target = reward + (self.gamma ** self.tau) * next_step * (1 - is_terminal)
-            self.target.train(mode)
-        return current, target.detach()
+        return self._td_step(trajectory, a_prime=a_prime)
 
 class BaseQNetwork(BaseValueNetwork, abc.ABC):
     '''
@@ -769,7 +797,7 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
     ):
         if a_prime is None:
             a_prime = self.exploit(trajectory.next_state)
-        return super().td_step(trajectory, a_prime)
+        return super().action_td_step(trajectory, a_prime)
 
     # Forward
     @abc.abstractmethod
