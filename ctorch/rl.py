@@ -726,7 +726,8 @@ class BaseQNetwork(BaseValueNetwork, abc.ABC):
         if not sample_wise:
             if torch.rand(()) < eps:
                 ret = A
-            ret = B
+            else:
+                ret = B
         unif = torch.rand(state.shape[:-len(self.state_shape)], device=self.device)
         ret = torch.where(unif < eps, A, B)
         prob = (eps / self.num_actions) + (1 - eps) * (ret == B).to(torch.float32)
