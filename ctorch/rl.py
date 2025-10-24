@@ -359,13 +359,19 @@ class TargetNetworkMixin(nn.Module):
             tgt.data.copy_(src.data)
 
     @torch.no_grad()
-    def update_target(self, weight: float = 1.0):
+    def update_target(self, weight: float | None = None, tau: float | None = None):
         '''
         Update the target network by copying the weights from the current network. No-op if the target network is not used.
 
         Args:
             weight (float, optional): The interpolation weight for the update. By default, it is 1.0.
         '''
+        if weight is None:
+            if tau is None:
+                weight = 1.0
+            else:
+                weight = 1 - tau
+
         if not (0.0 < weight <= 1.0):
             raise ValueError('weight must be in (0.0, 1.0]')
         if self._target is None:
