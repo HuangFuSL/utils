@@ -228,15 +228,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.p_max: torch.Tensor
         self.register_buffer('p_max', torch.tensor(p_max, dtype=torch.float32), persistent=True)
 
-    def set_weight(self, idx: torch.Tensor, weight: torch.Tensor):
+    def set_weight(self, idx: torch.Tensor, weight: torch.Tensor, alpha: float = 1.0):
         ''' Set the sampling weight for a batch of experiences. '''
-        self.weight[idx] = weight.reshape(-1).abs().clamp_min(1e-6)
+        self.weight[idx] = weight.detach().reshape(-1).abs().clamp_min(1e-6).pow(alpha)
 
     def get_weight(self, idx: torch.Tensor) -> torch.Tensor:
         ''' Get the sampling weight for a batch of experiences. '''
         return self.weight[idx]
 
-    def get_ipw(self, idx: torch.Tensor, beta: float, eps: float = 5e-4):
+    def get_ipw(self, idx: torch.Tensor, beta: float = 1.0, eps: float = 5e-4):
         '''
         Get the inverse probability weighting (IPW) for a batch of experiences, to balance the loss function. The IPW weight is given by:
 
