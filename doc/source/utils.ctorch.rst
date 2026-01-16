@@ -60,3 +60,11 @@ Utilities for Reinforcement Learning
    :members:
    :show-inheritance:
    :undoc-members:
+
+Utilities for Uplift Modeling
+-------------------------------------
+
+.. automodule:: utils.ctorch.uplift
+   :members:
+   :show-inheritance:
+   :undoc-members:
