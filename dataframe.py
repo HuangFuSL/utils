@@ -15,6 +15,59 @@ from polars.datatypes.classes import NumericType
 # On certain systems, datasets must be loaded **after** torch
 import datasets
 
+def add_shard_column(
+    df: pl.DataFrame, num_shards: int, dest_col: str,
+    src_col: str | Sequence[str] | None = None, seed: int | None = None
+) -> pl.DataFrame:
+    '''
+    Compute and add a shard column to a Polars DataFrame for sharding data across multiple workers.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame.
+        num_shards (int): The number of shards to create.
+        dest_col (str): The name of the destination shard column.
+        src_col (str | Sequence[str] | None): The source column(s) to use for assigning the shard. If None, a random shard is assigned.
+        seed (int | None): The random seed for shard assignment.
+
+    Returns:
+        pl.DataFrame: The DataFrame with the added shard column.
+    '''
+    # Check column existance
+    if dest_col in df.columns:
+        raise ValueError(
+            f'Destination column {dest_col} already exists in DataFrame'
+        )
+    if src_col is not None:
+        if isinstance(src_col, str):
+            src_col = [src_col]
+        if not src_col:
+            raise ValueError('src_col must not be empty if provided')
+        if not all(col in df.columns for col in src_col):
+            missing = [col for col in src_col if col not in df.columns]
+            raise ValueError(
+                f'Source columns {missing} do not exist in DataFrame'
+            )
+    if num_shards <= 0:
+        raise ValueError('num_shards must be a positive integer')
+
+    if src_col is None:
+        shard_expr = (
+            pl.int_range(0, pl.len(), eager=False)
+                .hash(seed_1=seed)
+                .mod(num_shards)
+                .cast(pl.Int64)
+                .alias(dest_col)
+        )
+    else:
+        shard_expr = (
+            pl.struct(src_col)
+                .hash(seed_1=seed)
+                .mod(num_shards)
+                .cast(pl.Int64)
+                .alias(dest_col)
+        )
+    return df.with_columns(shard_expr)
+
 def merge_columns(
     df: pl.DataFrame, src_cols: Sequence[str], dest_col: str,
     drop_src: bool = False, target_dtype: Type[NumericType] = pl.Float32
