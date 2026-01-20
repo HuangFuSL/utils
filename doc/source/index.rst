@@ -11,6 +11,14 @@ utils documentation
    :show-inheritance:
    :undoc-members:
 
+Polars-based Dataset Utilities
+------------------------------
+
+.. automodule:: utils.dataframe
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 PyTorch Utilities
 -----------------
 
