@@ -5,7 +5,7 @@ Originally in ctorch.py
 '''
 
 
-from typing import TYPE_CHECKING, Any, Callable, List, Protocol
+from typing import TYPE_CHECKING, Any, Callable, List, Protocol, Tuple
 import torch
 import warnings
 
@@ -648,6 +648,100 @@ class GaussianLinear(Module):
         scale = self.mu_scale
         return torch.tanh(self.linear_mean(x) / scale) * scale
 
+
+class ZeroInflatedLogNormal(Module):
+    '''
+    Implements a zero-inflated log-normal distribution layer. A zero-inflated log-normal distribution is a mixture of a point mass at zero and a log-normal distribution.
+
+    .. math::
+        \\begin{aligned}
+            P(X = 0) &= \\sigma(-\\text{logit}) \\\\
+            P(X > 0) &= 1 - \\sigma(-\\text{logit}) \\\\
+            \\log X | X > 0 &\\sim \\mathcal{N}(\\mu, \\sigma^2) \\\\
+        \\end{aligned}
+
+    Args:
+        zero (float): The minimum value for the output.
+        eps (float): A small value to avoid numerical issues.
+
+    Shapes:
+        * Input shape: (\\*, 2) or (\\*, 3), where the last dimension represents (logit, mu) or (logit, mu, log_sigma).
+        * Output shape: (\\*)
+    '''
+    def __init__(self, zero: float = 0.0, eps: float = 1e-8):
+        super(ZeroInflatedLogNormal, self).__init__()
+        self.register_buffer('zero', torch.tensor(zero))
+        self.register_buffer('const', 0.5 * torch.log(torch.tensor(2 * torch.pi)))
+        self.register_buffer('eps', torch.tensor(eps))
+        if TYPE_CHECKING:
+            self.zero: torch.Tensor
+            self.const: torch.Tensor
+            self.eps: torch.Tensor
+
+    def check_input_shape(self, x: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        '''
+        Check if the input tensor has sigma dimension.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, 2) or (\\*, 3).
+
+        Returns:
+            Tuple[torch.Tensor, ...]: The (logit, mu, log_sigma) tensors.
+        '''
+
+        if x.dim() <= 1:
+            raise ValueError('Input tensor must have at least 2 dimensions.')
+        if x.shape[-1] not in {2, 3}:
+            raise ValueError('The last dimension of input tensor must be 2 or 3.')
+        if x.shape[-1] == 3:
+            logit, mu, log_sigma = x.chunk(3, dim=-1)
+        else:
+            logit, mu = x.chunk(2, dim=-1)
+            log_sigma = torch.zeros_like(mu)
+        return tuple(t.squeeze(-1) for t in (logit, mu, log_sigma))
+
+    def forward(self, x: torch.Tensor):
+        '''
+        Forward pass for the zero-inflated log-normal distribution.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, 2) or (\\*, 3).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (\\*).
+        '''
+        logit, mu, log_sigma = self.check_input_shape(x)
+
+        prob = torch.sigmoid(logit)
+        return (
+            prob * torch.exp(mu + 0.5 * torch.exp(log_sigma * 2))
+            + self.zero
+        )
+
+    def loss(self, x, target):
+        '''
+        Compute the negative log-likelihood loss for the zero-inflated log-normal distribution.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (\\*, 2) or (\\*, 3).
+            target (torch.Tensor): Target tensor of shape (\\*).
+        Returns:
+            torch.Tensor: Loss tensor of shape (\\*).
+        '''
+        logit, mu, log_sigma = self.check_input_shape(x)
+        target = (target - self.zero).clamp(min=0.0)
+
+        nonzero_mask = (target > self.eps).float()
+        inflation_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            logit, nonzero_mask, reduction='none'
+        )
+        lognormal_loss = 0.5 * ((mu - torch.log(target + self.eps)) ** 2) * torch.exp(-2 * log_sigma)
+        jacobian_loss = torch.log(target + self.eps) + log_sigma + self.const
+        return (
+            inflation_loss +
+            lognormal_loss * nonzero_mask +
+            jacobian_loss * nonzero_mask
+        )
 
 class RotaryTemporalEmbedding(Module):
     '''
