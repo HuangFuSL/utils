@@ -238,108 +238,166 @@ def save_dataset(
     os.replace(temp.name, os.path.join(dest_dir, 'config.json'))
     return file_list
 
-
-def load_dataset(
-    src_dir: str, split: str = 'train', streaming: bool = False,
-    data_cols: Sequence[str] | None = None
-):
+class HfDataset():
     '''
-    Load a Polars DataFrame to PyTorch Dataset from a partitioned Parquet dataset on disk.
+    Initialize a Dataset instance from a partitioned Parquet dataset on disk.
+
+    Usage:
+        .. code-block:: python
+
+            dataset = HfDataset('/path/to/dataset', split='train', schema={
+                'features': (torch.float32, True),
+                'label': (torch.int64, False)
+            })
+            dataloader = dataset.get_dataloader(batch_size=32, num_workers=4)
+            for batch in dataloader:
+                features = batch['features']  # PackedSequence
+                labels = batch['label']        # Tensor
 
     Args:
-        src_dir (str): The source directory to load the dataset from.
+        root_dir (str): The root directory of the dataset.
         split (str): The dataset split name (e.g., 'train', 'val', 'test').
-        streaming (bool): Whether to load the dataset in streaming mode.
-
-    Returns:
-        datasets.Dataset: The loaded dataset.
+        schema (Dict[str, Tuple[torch.dtype, bool]] | None): The schema defining the data types, and whether the first dimension is variable-length.
     '''
-    # Sanity checks
-    if not os.path.exists(os.path.join(src_dir, 'config.json')):
-        raise ValueError(f'No config.json found in {src_dir}')
-    with open(os.path.join(src_dir, 'config.json'), 'r') as f:
-        config = json.load(f)
-    if split not in config:
-        raise ValueError(f'Dataset split {split} not found in {src_dir}')
+    def __init__(
+        self, root_dir: str, split: str = 'train',
+        schema: Dict[str, Tuple[torch.dtype, bool]] | None = None
+    ):
+        self.root_dir = root_dir
+        self.split = split
+        self.schema = schema
+        self._dataset = self.load_dataset(streaming=False)
 
-    # Transform file paths to full paths
-    config = {
-        split: [os.path.join(src_dir, f) for f in config[split]]
-        for split in config
-    }
-    dataset = datasets.load_dataset(
-        'parquet', data_files=config, split=split, streaming=streaming
-    )
-    if data_cols is not None:
-        # type: ignore
-        return dataset.with_format('torch', columns=list(data_cols))
-    return dataset.with_format('torch')
+    @property
+    def columns(self) -> List[str]:
+        '''
+        Get the list of columns in the dataset.
 
+        Returns:
+            List[str]: The list of column names.
+        '''
+        return self._dataset.column_names # type: ignore
 
-SCHEMA_TYPE = \
-    torch.dtype | \
-    Tuple[torch.dtype, bool]
+    def get_dataloader(
+        self, batch_size: int, num_workers: int = 0,
+        pin_memory: bool = False, prefetch_factor: int | None = None,
+        return_dict: bool = True
+    ):
+        '''
+        Get a PyTorch DataLoader for the dataset.
 
+        Args:
+            batch_size (int): The batch size for the DataLoader.
+            num_workers (int): The number of worker processes for data loading.
+            pin_memory (bool): Whether to use pinned memory for data loading.
+            prefetch_factor (int): The number of samples to prefetch per worker.
+            return_dict (bool): Whether to return a dictionary of batched tensors. If False, returns a tuple.
+        Returns:
+            torch.utils.data.DataLoader: The PyTorch DataLoader for the dataset.
+        '''
+        persistent_workers = num_workers > 0
+        return torch.utils.data.DataLoader(
+            self._dataset, # type: ignore
+            batch_size=batch_size, collate_fn=self.get_collate_fn(return_dict),
+            num_workers=num_workers, pin_memory=pin_memory, prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers
+        )
 
-def get_collate_fn(
-    data_cols: Sequence[str] = ('features', 'label'),
-    schema: Dict[str, SCHEMA_TYPE] | None = None,
-    return_dict: bool = False
-):
-    '''
-    Get a collate function for PyTorch DataLoader that batches data from specified columns. The dataset must yield dictionaries of PyTorch tensors.
+    def load_dataset(self, streaming: bool = False):
+        '''
+        Load a Polars DataFrame to PyTorch Dataset from a partitioned Parquet dataset on disk.
 
-    Args:
-        data_cols (Sequence[str]): The columns to include in the batch, by default ('features', 'label').
-        schema (Dict[str, Tuple[torch.dtype, bool]]): The schema defining the data types, and whether the first dimension is variable-length.
-        return_dict (bool): Whether to return a dictionary of batched tensors. If False, returns a tuple.
+        Args:
+            src_dir (str): The source directory to load the dataset from.
+            split (str): The dataset split name (e.g., 'train', 'val', 'test').
+            streaming (bool): Whether to load the dataset in streaming mode.
 
-    Returns:
-        Callable: A collate function for PyTorch DataLoader.
-    '''
-    if schema is None:
-        schema = {}
-    collate_fn_dict = {}
-    default = (torch.float32, False)
-    for field in data_cols:
-        if field in schema:
-            dtype_info = schema[field]
-            if isinstance(dtype_info, tuple):
-                dtype, var_len = dtype_info
-            else:
-                dtype, var_len = dtype_info, False
-        else:
-            dtype, var_len = default
-        if not var_len:
-            collate_fn_dict[field] = (
-                lambda x, dtype=dtype:
-                torch.stack(x).to(dtype)
-            )
-        else:
-            collate_fn_dict[field] = (
-                lambda x, dtype=dtype:
-                    torch.nn.utils.rnn.pack_sequence(
-                        x, enforce_sorted=False
-                    ).to(dtype)
-            )
+        Returns:
+            datasets.Dataset: The loaded dataset.
+        '''
+        # Sanity checks
+        if not os.path.exists(os.path.join(self.root_dir, 'config.json')):
+            raise ValueError(f'No config.json found in {self.root_dir}')
+        with open(os.path.join(self.root_dir, 'config.json'), 'r') as f:
+            config = json.load(f)
+        if self.split not in config:
+            raise ValueError(f'Dataset split {self.split} not found in {self.root_dir}')
 
-    def collate_fn(batch):
-        fields = {
-            field: []
-            for field in data_cols
+        # Transform file paths to full paths
+        config = {
+            split: [os.path.join(self.root_dir, f) for f in config[split]]
+            for split in config
         }
-        for item in batch:
-            for field in data_cols:
-                fields[field].append(item[field])
-        if return_dict:
-            batch_out = {
-                field: collate_fn_dict[field](fields[field])
+        dataset = datasets.load_dataset(
+            'parquet', data_files=config, split=self.split, streaming=streaming
+        )
+        if self.schema is not None:
+            # type: ignore
+            return dataset.with_format(
+                'torch', columns=list(self.schema.keys())
+            )
+        return dataset.with_format('torch')
+
+    def get_collate_fn(self, return_dict: bool = False):
+        '''
+        Get a collate function for PyTorch DataLoader that batches data from specified columns. The dataset must yield dictionaries of PyTorch tensors.
+
+        Args:
+            data_cols (Sequence[str]): The columns to include in the batch, by default ('features', 'label').
+            schema (Dict[str, Tuple[torch.dtype, bool]]): The schema defining the data types, and whether the first dimension is variable-length.
+            return_dict (bool): Whether to return a dictionary of batched tensors. If False, returns a tuple.
+
+        Returns:
+            Callable: A collate function for PyTorch DataLoader.
+        '''
+        if self.schema is None:
+            schema = {}
+            data_cols = self.columns
+        else:
+            schema = self.schema
+            data_cols = list(self.schema.keys())
+
+        collate_fn_dict = {}
+        default = (torch.float32, False)
+        for field in data_cols:
+            if field in schema:
+                dtype_info = schema[field]
+                if isinstance(dtype_info, tuple):
+                    dtype, var_len = dtype_info
+                else:
+                    dtype, var_len = dtype_info, False
+            else:
+                dtype, var_len = default
+            if not var_len:
+                collate_fn_dict[field] = (
+                    lambda x, dtype=dtype:
+                    torch.stack(x).to(dtype)
+                )
+            else:
+                collate_fn_dict[field] = (
+                    lambda x, dtype=dtype:
+                        torch.nn.utils.rnn.pack_sequence(
+                            x, enforce_sorted=False
+                        ).to(dtype)
+                )
+
+        def collate_fn(batch):
+            fields = {
+                field: []
                 for field in data_cols
             }
-        else:
-            batch_out = tuple(
-                collate_fn_dict[field](fields[field])
-                for field in data_cols
-            )
-        return batch_out
-    return collate_fn
+            for item in batch:
+                for field in data_cols:
+                    fields[field].append(item[field])
+            if return_dict:
+                batch_out = {
+                    field: collate_fn_dict[field](fields[field])
+                    for field in data_cols
+                }
+            else:
+                batch_out = tuple(
+                    collate_fn_dict[field](fields[field])
+                    for field in data_cols
+                )
+            return batch_out
+        return collate_fn
