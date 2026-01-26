@@ -743,6 +743,70 @@ class ZeroInflatedLogNormal(Module):
             jacobian_loss * nonzero_mask
         )
 
+class NegativeBinomial(Module):
+    '''
+    Implements the negative log-likelihood loss for the Negative Binomial distribution.
+
+    Let :math:`g_\\mu` and :math:`g_\\alpha` be the outputs of the network. The mean :math:`\\mu` and dispersion :math:`\\alpha` are obtained via ``activation`` function to ensure positivity.
+
+    The log-likelihood loss is computed as:
+
+    .. math::
+        \\begin{aligned}
+            \\mathcal{L}(x; \\mu, \\alpha) &= \\log \\Gamma(x + \\alpha) - \\log \\Gamma(\\alpha) - \\log \\Gamma(x + 1) \\\\
+            &+ \\alpha (\\log \\alpha - \\log (\\mu + \\alpha)) + x (\\log \\mu - \\log (\\mu + \\alpha))
+        \\end{aligned}
+
+    Args:
+        alpha_param (bool): If True, use a learnable parameter for alpha. Default is False.
+        activation (str): The activation function to ensure positivity of mu and alpha. Should be either 'softplus' or 'exp'. Default is 'softplus'.
+
+    Shapes:
+        * Input shape: (\\*, 2) if alpha_param is False, else (\\*).
+        * Output shape: (\\*)
+    '''
+    def __init__(
+        self, alpha_param: bool = False, activation: str = 'softplus'
+    ):
+        super().__init__()
+        if activation not in {'softplus', 'exp'}:
+            raise ValueError(f'Unsupported activation function: {activation}')
+        self.activation = activation
+        self.alpha_param = alpha_param
+        self.log_alpha = torch.nn.Parameter(torch.tensor(0.0))
+
+    def _check_input_shape(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self.alpha_param:
+            if x.size(-1) != 2:
+                raise ValueError('The last dimension of input tensor must be 2 when alpha_param is False.')
+            log_mu, log_alpha = x.chunk(2, dim=-1)
+            log_mu, log_alpha = log_mu.squeeze(-1), log_alpha.squeeze(-1)
+        else:
+            log_mu = x
+            log_alpha = self.log_alpha.expand_as(x)
+        if self.activation == 'softplus':
+            log_alpha = (torch.nn.functional.softplus(log_alpha) + 1e-8).log()
+            log_mu = (torch.nn.functional.softplus(log_mu) + 1e-8).log()
+        return log_mu, log_alpha
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        log_mu, _ = self._check_input_shape(x)
+        return log_mu.exp()
+
+    def loss(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        log_mu, log_alpha = self._check_input_shape(x)
+        log_mu_alpha = torch.logaddexp(log_mu, log_alpha)
+        alpha_exp = log_alpha.exp()
+        target = target.float()
+
+        return -(
+            + torch.lgamma(target + alpha_exp)
+            - torch.lgamma(alpha_exp)
+            - torch.lgamma(target + 1) \
+            + alpha_exp * (log_alpha - log_mu_alpha)
+            + target * (log_mu - log_mu_alpha)
+        )
+
 class RotaryTemporalEmbedding(Module):
     '''
     Implements rotary positional embedding proposed in "RoFormer: Enhanced Transformer with Rotary Position Embedding" (https://arxiv.org/abs/2104.09864).
