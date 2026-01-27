@@ -887,6 +887,134 @@ class NegativeBinomial(Module):
             + target * (log_mu - log_mu_alpha)
         )
 
+class StackedTruncatedNormal(Module):
+    '''
+    Implements the truncated normal distribution. The truncated probability density function is **stacked to the span boundaries**.
+
+    Args:
+        lb (float): The lower bound of the truncation, default is -inf.
+        ub (float): The upper bound of the truncation, default is inf.
+        eps (float): A small value to avoid numerical issues.
+        sigma_activation (str): The activation function to ensure positivity of sigma. Should be either 'softplus' or 'exp'.
+    '''
+
+    def __init__(
+        self, lb: float = float('-inf'), ub: float = float('inf'),
+        eps: float = 1e-6, sigma_activation: str = 'softplus'
+    ):
+        super().__init__()
+        if lb >= ub:
+            raise ValueError(f'Require lb < ub, got lb={lb}, ub={ub}')
+        if sigma_activation not in {'softplus', 'exp'}:
+            raise ValueError(f'Unsupported sigma activation: {sigma_activation}')
+        self.register_buffer('lb', torch.tensor(lb))
+        self.register_buffer('ub', torch.tensor(ub))
+        self.normal = torch.distributions.Normal(0.0, 1.0)
+        self.sigma_activation = sigma_activation
+        self.eps = eps
+
+        self.sigma_scale = torch.nn.Parameter(
+            torch.tensor(10.0), requires_grad=True
+        )
+
+        if TYPE_CHECKING:
+            self.lb: torch.Tensor
+            self.ub: torch.Tensor
+
+        self.has_lb = torch.isfinite(self.lb).item()
+        self.has_ub = torch.isfinite(self.ub).item()
+
+
+    def _check_input_shape(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if x.size(-1) != 2:
+            raise ValueError('The last dimension of input tensor must be 2.')
+        mu, raw_sigma = x.chunk(2, dim=-1)
+        mu, raw_sigma = mu.squeeze(-1), raw_sigma.squeeze(-1)
+        if self.sigma_activation == 'softplus':
+            sigma = torch.nn.functional.softplus(raw_sigma) + self.eps
+        else:
+            sigma = torch.exp(raw_sigma) + self.eps
+
+        return mu, sigma * torch.nn.functional.softplus(self.sigma_scale)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mu, sigma = self._check_input_shape(x)
+
+        z_l, z_u = (self.lb - mu) / sigma, (self.ub - mu) / sigma
+        Phi_l, Phi_u = torch.special.ndtr(z_l), torch.special.ndtr(z_u)
+        phi_l, phi_u = self.normal.log_prob(z_l).exp(), self.normal.log_prob(z_u).exp()
+
+        ret = mu * (Phi_u - Phi_l) + sigma * (phi_l - phi_u)
+        if self.has_lb:
+            left_mean = (self.lb * Phi_l).nan_to_num(0.0)
+            ret = ret + left_mean
+        if self.has_ub:
+            right_mean = (self.ub * (1 - Phi_u)).nan_to_num(0.0)
+            ret = ret + right_mean
+
+        return ret
+
+    def loss(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        mu, sigma = self._check_input_shape(x)
+
+        is_left = target <= self.lb
+        is_right = target >= self.ub
+        z_target = (target - mu) / sigma
+        z_l, z_u = (self.lb - mu) / sigma, (self.ub - mu) / sigma
+        log_Phi_l = torch.special.log_ndtr(z_l)
+        log_Phi_u = torch.special.log_ndtr(-z_u)
+
+        nll = -self.normal.log_prob(z_target) + torch.log(sigma)
+        if self.has_lb:
+            nll = torch.where(is_left, -log_Phi_l, nll)
+        if self.has_ub:
+            nll = torch.where(is_right, -log_Phi_u, nll)
+
+        return nll
+
+class LogStackedTruncatedNormal(StackedTruncatedNormal):
+    '''
+    Implements the truncated log-normal distribution. The truncated probability density function is **stacked to the span boundaries**. The ``lb`` and ``ub`` are defined in the log-space.
+
+    Args:
+        lb (float): The lower bound of the truncation in log-space, default is -inf.
+        ub (float): The upper bound of the truncation in log-space, default is inf.
+        eps (float): A small value to avoid numerical issues.
+        sigma_activation (str): The activation function to ensure positivity of sigma. Should be either 'softplus' or 'exp'.
+    '''
+    def __init__(
+        self, lb: float = float('-inf'), ub: float = float('inf'),
+        eps: float = 1e-6, sigma_activation: str = 'softplus',
+    ):
+        super().__init__(lb, ub, eps, sigma_activation)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mu, sigma = self._check_input_shape(x)
+
+        z_l, z_u = (self.lb - mu) / sigma, (self.ub - mu) / sigma
+        Phi_l, Phi_u = torch.special.ndtr(z_l), torch.special.ndtr(z_u)
+
+        offset = mu + sigma.pow(2)
+        z_l_shift = (self.lb - offset) / sigma
+        z_u_shift = (self.ub - offset) / sigma
+        Phi_l_shift = torch.special.ndtr(z_l_shift)
+        Phi_u_shift = torch.special.ndtr(z_u_shift)
+
+        ret = torch.exp(mu + 0.5 * sigma.pow(2)) * (Phi_u_shift - Phi_l_shift)
+        if self.has_lb:
+            left_mean = (torch.exp(self.lb) * Phi_l).nan_to_num(0.0)
+            ret = ret + left_mean
+        if self.has_ub:
+            right_mean = (torch.exp(self.ub) * (1 - Phi_u)).nan_to_num(0.0)
+            ret = ret + right_mean
+
+        return ret
+
+    def loss(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        log_tgt = target.log()
+        jacobian_mask = (log_tgt > self.lb) & (log_tgt < self.ub)
+        return super().loss(x, log_tgt) + log_tgt * jacobian_mask.float()
+
 class RotaryTemporalEmbedding(Module):
     '''
     Implements rotary positional embedding proposed in "RoFormer: Enhanced Transformer with Rotary Position Embedding" (https://arxiv.org/abs/2104.09864).
