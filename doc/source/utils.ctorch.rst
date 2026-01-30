@@ -45,6 +45,14 @@ Additional Base Operators
    :show-inheritance:
    :undoc-members:
 
+Trainer Utilities
+-----------------
+
+.. automodule:: utils.trainer
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 Utilities for Variable Length Sequences
 ---------------------------------------
 
