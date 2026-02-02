@@ -357,10 +357,12 @@ class Trainer():
         while deferred_hooks:
             new_deferred_hooks: List[BaseTrainerHook] = []
             for hook in deferred_hooks:
-                method = getattr(hook, method_name)
+                method = getattr(type(hook), method_name)
                 if method is getattr(BaseTrainerHook, method_name):
                     # Skip hooks that do not implement this method
                     continue
+
+                method = getattr(hook, method_name)
                 try:
                     ret = method(self)
                 except DeferHookExec:
