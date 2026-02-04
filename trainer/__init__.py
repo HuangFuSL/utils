@@ -80,7 +80,10 @@ _BASE_TYPE = {
 }
 _SEQUENCE_TYPE = {list, tuple, set, frozenset}
 _MAPPING_TYPE = {dict}
-_TORCH_TYPE = {torch.Tensor, torch.device, torch.dtype, torch.Size}
+_TORCH_TYPE = {
+    torch.Tensor, torch.device, torch.dtype, torch.Size,
+    torch.nn.utils.rnn.PackedSequence
+}
 
 @dataclasses.dataclass
 class BaseContext():
