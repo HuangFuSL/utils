@@ -196,8 +196,36 @@ class TqdmHook(BaseHook):
         unit: The unit of progress to track. Can be 'data_step', 'update_step', or 'epoch'.
     '''
 
-    def __init__(self, unit: Literal['data_step', 'update_step', 'epoch'] = 'data_step'):
+    def __init__(
+        self, unit: Literal['data_step', 'update_step', 'epoch'] = 'data_step',
+        metrics_keys: List[str] | None = None, floatfmt: str = '.4g'
+    ):
         self.unit = unit
+        self.metrics_keys = metrics_keys
+        self.floatfmt = floatfmt
+
+    def _refresh_metrics_postfix(self, trainer: Trainer) -> None:
+        if self.metrics_keys is None or not trainer.global_context.metrics:
+            return
+        metrics_log = trainer.global_context.metrics
+        if len(metrics_log) - 1 == self._last_metrics_idx:
+            return
+        self._last_metrics_idx = len(metrics_log) - 1
+
+        _, _, metrics = metrics_log[self._last_metrics_idx]
+        if not isinstance(metrics, dict) or not metrics:
+            return
+        if self.metrics_keys is not None:
+            metrics = {k: metrics[k] for k in self.metrics_keys if k in metrics}
+
+        postfix = {}
+        for k, v in metrics.items():
+            if isinstance(v, float):
+                postfix[k] = format(v, self.floatfmt)
+            else:
+                postfix[k] = v
+
+        self.tqdm.set_postfix(postfix, refresh=False)
 
     def before_stage(self, trainer: Trainer) -> LoopControl | None:
         import tqdm
@@ -206,14 +234,17 @@ class TqdmHook(BaseHook):
     def before_step(self, trainer: Trainer) -> LoopControl | None:
         if self.unit == 'data_step':
             self.tqdm.update(1)
+            self._refresh_metrics_postfix(trainer)
 
     def after_optimizer_step(self, trainer: Trainer) -> LoopControl | None:
         if self.unit == 'update_step':
             self.tqdm.update(1)
+            self._refresh_metrics_postfix(trainer)
 
     def after_epoch(self, trainer: Trainer) -> LoopControl | None:
         if self.unit == 'epoch':
             self.tqdm.update(1)
+            self._refresh_metrics_postfix(trainer)
 
     def finalize_stage(self, trainer: Trainer) -> LoopControl | None:
         if hasattr(self, "tqdm"):
