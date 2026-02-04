@@ -108,6 +108,9 @@ class InitDeviceHook(BaseHook):
             device = get_best_device()
         self.device = torch.device(device)
 
+    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
+        trainer.model_context.device = self.device
+
 class GradientClipHook(BaseHook):
     '''
     Hook to clip gradients before optimizer step.
