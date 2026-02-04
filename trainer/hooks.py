@@ -558,10 +558,16 @@ class EvaluateHook(BaseHook):
             self.evaluator.model_context.device = trainer.device
             self.evaluator.model_context.model = trainer.model
         self.evaluator.evaluate()
+        new_metrics = self.evaluator.get_metrics().copy()
+        if trainer.global_context.metrics:
+            if trainer.global_context.metrics[-1][1] == trainer.global_context.step:
+                # Avoid duplicate metrics for the same step
+                trainer.global_context.metrics[-1][-1].update(new_metrics)
+                return
         trainer.global_context.metrics.append((
             trainer.global_context.epoch,
             trainer.global_context.step,
-            self.evaluator.get_metrics().copy()
+            new_metrics
         ))
 
     def after_step(self, trainer: Trainer) -> LoopControl | None:
