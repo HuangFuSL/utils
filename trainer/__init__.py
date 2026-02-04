@@ -2,503 +2,573 @@
 `utils.trainer` - Trainer module with context management and hooks.
 '''
 
+import bisect
 import dataclasses
 import enum
-import bisect
-from typing import Any, Callable, Dict, Iterator, List, Tuple
+import warnings
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Self, Tuple
 
 import torch
 
-from ..ctorch.nn import Model
+from ..ctorch.nn import Module
 
 Optimizer = torch.optim.Optimizer
 LRScheduler = torch.optim.lr_scheduler.LRScheduler
 
+# Controls and hooks
 
-@dataclasses.dataclass
-class GlobalContext():
-    # Static fields
-    _child: 'EpochContext | None' = None
-    current_global_data_step: int = 0
-    current_global_update_step: int = 0
-    current_epoch: int = 0
+class LoopControl(enum.IntEnum):
+    '''
+    Control flags for loop execution.
 
-    device: torch.device | None = None
-    model: Model | None = None
-    optimizer: Optimizer | List[Optimizer] | None = None
-    lr_scheduler: LRScheduler | List[LRScheduler] | None = None
-
-    train_dataloader: torch.utils.data.DataLoader | None = None
-
-    objects: Dict[str, Any] = dataclasses.field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'current_global_data_step': self.current_global_data_step,
-            'current_global_update_step': self.current_global_update_step,
-            'current_epoch': self.current_epoch,
-            'device': str(self.device) if self.device is not None else None,
-            'objects': self.objects,
-            '_child': self._child.to_dict() if self._child is not None else None,
-        }
-
-    def load_dict(self, data: Dict[str, Any]):
-        self.current_global_data_step = data['current_global_data_step']
-        self.current_global_update_step = data['current_global_update_step']
-        self.current_epoch = data['current_epoch']
-        self.device = torch.device(data['device']) if data['device'] is not None else None
-        self.objects = data['objects']
-
-        if data['_child'] is not None:
-            if self._child is None:
-                self._child = EpochContext(_parent=self)
-            self._child.load_dict(data['_child'])
-
-    def __getitem__(self, key: str) -> Any:
-        return self.objects[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.objects[key] = value
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.objects.get(key, default)
-
-    def setdefault(self, key: str, default: Any) -> Any:
-        return self.objects.setdefault(key, default)
-
-    @property
-    def child(self) -> 'EpochContext':
-        if self._child is not None:
-            return self._child
-        raise ValueError('EpochContext is not created yet.')
-
-    def new_child(self) -> 'EpochContext':
-        if self._child is not None:
-            return self._child
-        self._child = EpochContext(_parent=self)
-        return self._child
-
-    def increment_epoch(self):
-        self.current_epoch += 1
-
-    def finalize_child(self):
-        if self._child is None:
-            return
-        self.child.finalize()
-        del self._child
-        self._child = None
-
-
-@dataclasses.dataclass
-class EpochContext():
-    _parent: GlobalContext
-    _child: 'StepContext | None' = None
-    _current_dataloader_iter: Iterator[Any] | None = None
-
-    current_data_step: int = 0
-    current_update_step: int = 0
-
-    objects: Dict[str, Any] = dataclasses.field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'current_data_step': self.current_data_step,
-            'current_update_step': self.current_update_step,
-            'objects': self.objects,
-            '_child': self._child.to_dict() if self._child is not None else None,
-        }
-
-    def load_dict(self, data: Dict[str, Any]):
-        self.objects = data['objects']
-        self.current_data_step = data['current_data_step']
-        self.current_update_step = data['current_update_step']
-        if data['_child'] is not None:
-            if self._child is None:
-                self._child = StepContext(_parent=self)
-            self._child.load_dict(data['_child'])
-
-    def __getitem__(self, key: str) -> Any:
-        return self.objects[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.objects[key] = value
-
-    @property
-    def child(self) -> 'StepContext':
-        if self._child is not None:
-            return self._child
-        raise ValueError('StepContext is not created yet.')
-
-    def finalize(self):
-        self._current_dataloader_iter = None
-        self.objects.clear()
-
-    def new_child(self) -> 'StepContext':
-        if self._child is not None:
-            return self._child
-        self._child = StepContext(_parent=self)
-        return self._child
-
-    def increment_data_step(self):
-        self.current_data_step += 1
-        self._parent.current_global_data_step += 1
-
-    def increment_update_step(self):
-        self.current_update_step += 1
-        self._parent.current_global_update_step += 1
-
-    def finalize_child(self):
-        if self._child is None:
-            return
-        self.child.finalize()
-        del self._child
-        self._child = None
-
-    @property
-    def dataloader_iter(self) -> Iterator[Any]:
-        if self._current_dataloader_iter is None:
-            if self._parent.train_dataloader is None:
-                raise ValueError('train_dataloader is not set yet.')
-            self._current_dataloader_iter = iter(self._parent.train_dataloader)
-        return self._current_dataloader_iter
-
-
-@dataclasses.dataclass
-class StepContext():
-    _parent: EpochContext
-
-    batch: Any = None
-    losses: torch.Tensor | None = None
-    loss: torch.Tensor | None = None
-
-    objects: Dict[str, Any] = dataclasses.field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'objects': self.objects,
-        }
-
-    def load_dict(self, data: Dict[str, Any]):
-        self.objects = data['objects']
-
-    def __getitem__(self, key: str) -> Any:
-        return self.objects[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self.objects[key] = value
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.objects.get(key, default)
-
-    def setdefault(self, key: str, default: Any) -> Any:
-        return self.objects.setdefault(key, default)
-
-    def finalize(self):
-        self.batch = None
-        self.losses = None
-        self.loss = None
-        self.objects.clear()
-
-
-class TrainerControl(enum.IntFlag):
+    - NONE: No control action.
+    - SKIP_STEP: Skip the rest of the current step.
+    - SKIP_EPOCH: Skip the rest of the current epoch.
+    - SKIP_STAGE: Skip all remaining stages.
+    '''
     NONE = 0
-    SKIP_LR_SCHEDULER_STEP = enum.auto()
-    SKIP_OPTIMIZER_STEP = enum.auto()
-    SKIP_STEP = enum.auto()
-    STOP_TRAINING = enum.auto()
+    SKIP_EVENT = 1
+    SKIP_STEP = 2
+    SKIP_EPOCH = 3
+    SKIP_STAGE = 4
 
-HookReturn = TrainerControl | None
+    def __bool__(self) -> bool:
+        return self != LoopControl.NONE
 
-class TrainEnd(Exception): pass
-class EpochEnd(Exception): pass
-class StepEnd(Exception): pass
-class DeferHookExec(Exception): pass
+    def __or__(self, other: 'LoopControl | None') -> 'LoopControl':
+        if other is None:
+            ret = self
+        else:
+            ret = LoopControl(max(self.value, other.value))
+        return ret
+
+    def throw(self, threshold: 'LoopControl | None' = None) -> None:
+        if threshold is None:
+            threshold = LoopControl.NONE
+        if self and self >= threshold:
+            raise BreakLoop(self)
+
+# Exceptions
+class DeferHookExec(Exception):
+    ''' Exception for resolving hook execution order. '''
+    pass
 
 
-@dataclasses.dataclass(slots=True)
-class BaseTrainerHook():
+class BreakLoop(Exception):
+    ''' Exception to break the current loop with a control flag. '''
+    def __init__(self, control: LoopControl):
+        self.control = control
+
+
+class BaseHook():
     '''
-    Base class for trainer hooks. All methods return NotImplemented by default.
-    Subclasses can override the methods they need. Any method should check the criteria
-    for its execution and raise DeferHookExec if the criteria are not met yet.
-
-    Methods:
-        before_train(trainer): Called before training starts.
-        before_epoch(trainer): Called before each epoch starts.
-        before_step(trainer): Called before each training step.
-        before_fetch(trainer): Called before fetching data.
-        after_fetch(trainer): Called after fetching data.
-        before_forward(trainer): Called before the forward pass.
-        after_forward(trainer): Called after the forward pass.
-        before_backward(trainer): Called before the backward pass.
-        after_backward(trainer): Called after the backward pass.
-        after_data_step(trainer): Called after each data step.
-        on_reduce_loss(trainer): Called when reducing the loss.
-        before_optimizer_step(trainer): Called before the optimizer step.
-        after_optimizer_step(trainer): Called after the optimizer step.
-        after_update_step(trainer): Called after each update step.
-        before_lr_scheduler_step(trainer): Called before the LR scheduler step.
-        after_lr_scheduler_step(trainer): Called after the LR scheduler step.
-        after_step(trainer): Called after each training step.
-        after_epoch(trainer): Called after each epoch ends.
-        after_train(trainer): Called after training ends.
-        on_exception(trainer): Called when an exception occurs during training. The exception can be accessed via trainer.exception.
+    Base class for hooks. All methods return None by default.
+    Subclasses can override the methods they need. Hooks can be called
+    via hook(method_name, parent), which will dispatch to the appropriate method.
     '''
-    def before_train(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_epoch(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_fetch(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_fetch(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_forward(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_forward(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_backward(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_backward(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_data_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def on_reduce_loss(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_optimizer_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_optimizer_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_update_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def before_lr_scheduler_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_lr_scheduler_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_step(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_epoch(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def after_train(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
-    def on_exception(self, trainer: 'Trainer') -> HookReturn: return NotImplemented
+    def __contains__(self, item: str) -> bool:
+        return hasattr(self, item)
 
+    def __getitem__(self, method_name: str):
+        return getattr(self, method_name)
 
-class Trainer():
+    def __call__(self, method_name: str, parent: 'BatchedModelLoop') -> LoopControl | None:
+        return self[method_name](parent)
+
+_BASE_TYPE = {
+    type(None), bool, int, float, complex, str, bytes, bytearray
+}
+_SEQUENCE_TYPE = {list, tuple, set, frozenset}
+_MAPPING_TYPE = {dict}
+_TORCH_TYPE = {torch.Tensor, torch.device, torch.dtype, torch.Size}
+
+@dataclasses.dataclass
+class BaseContext():
     '''
-    Trainer class to manage the training loop with hooks.
+    Base context class for storing arbitrary torch-saveable objects.
+    '''
+    objects: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
-    Methods:
-        train(): Start the training process.
-        register_hook(hook, priority): Register a training hook with optional priority. All hooks must be registered before calling train().
+    @staticmethod
+    def _assert_torch_saveable(value: Any) -> None:
+        stack = [value]
+        while stack:
+            item = stack.pop()
+            item_type = type(item)
+            if item_type in _BASE_TYPE or item_type in _TORCH_TYPE:
+                continue
+            if isinstance(item, enum.Enum):
+                continue
+            if item_type in _SEQUENCE_TYPE:
+                stack.extend(item)
+                continue
+            if item_type in _MAPPING_TYPE:
+                stack.extend(item.keys())
+                stack.extend(item.values())
+                continue
+            raise TypeError(
+                f'Unsupported object type: {item_type.__name__}'
+            )
+
+    def __getitem__(self, key: str) -> Any:
+        return self.objects[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._assert_torch_saveable(value)
+        self.objects[key] = value
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.objects
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.objects.get(key, default)
+
+    def setdefault(self, key: str, default: Any) -> Any:
+        if key not in self.objects:
+            self._assert_torch_saveable(default)
+        return self.objects.setdefault(key, default)
+
+    def to_dict(self) -> Dict[str, Any]:
+        self._assert_torch_saveable(self.objects)
+        return {'objects': self.objects}
+
+    def load_dict(self, data: Dict[str, Any]):
+        objects = data.get('objects', {})
+        self._assert_torch_saveable(objects)
+        self.objects = objects
+
+@dataclasses.dataclass
+class ModelContext(BaseContext):
+    '''
+    Context to store model-related objects.
+    '''
+    device: torch.device | None = None
+    model: Module | None = None
+    optimizer: List[Optimizer] | None = None
+    lr_scheduler: List[LRScheduler] | None = None
+    dataloader: torch.utils.data.DataLoader | None = None
+    # ModelContext does not use objects dict.
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'device': str(self.device) if self.device is not None else None,
+            'model': self.model.state_dict() if self.model is not None else None,
+            'optimizer': [
+                opt.state_dict() for opt in self.optimizer
+            ] if self.optimizer is not None else None,
+            'lr_scheduler': [
+                sched.state_dict() for sched in self.lr_scheduler
+            ] if self.lr_scheduler is not None else None,
+            'dataloader': None,  # Dataloader state is not saved
+        } | super().to_dict()
+
+    def load_dict(self, data: Dict[str, Any]):
+        super().load_dict(data)
+        if data.get('device') is not None:
+            self.device = torch.device(data['device'])
+        if self.model is not None and data.get('model') is not None:
+            self.model.load_state_dict(data['model'])
+        if self.optimizer is not None and data.get('optimizer') is not None:
+            for opt, state in zip(self.optimizer, data['optimizer']):
+                opt.load_state_dict(state)
+        if self.lr_scheduler is not None and data.get('lr_scheduler') is not None:
+            for sched, state in zip(self.lr_scheduler, data['lr_scheduler']):
+                sched.load_state_dict(state)
+@dataclasses.dataclass
+class GlobalContext(BaseContext):
+    '''
+    Context to store global counter and metrics.
+    '''
+    epoch: int = 0
+    fetch: int = 0
+    forward: int = 0
+    backward: int = 0
+    update: int = 0
+    scheduler_step: int = 0
+    step: int = 0
+    # Epoch, step, metric dict
+    metrics: List[Tuple[int, int, Dict[str, float]]] = dataclasses.field(
+        default_factory=list
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'epoch': self.epoch,
+            'fetch': self.fetch,
+            'forward': self.forward,
+            'backward': self.backward,
+            'update': self.update,
+            'scheduler_step': self.scheduler_step,
+            'metrics': self.metrics,
+        } | super().to_dict()
+
+    def load_dict(self, data: Dict[str, Any]):
+        super().load_dict(data)
+        self.epoch = data['epoch']
+        self.fetch = data['fetch']
+        self.forward = data['forward']
+        self.backward = data['backward']
+        self.update = data['update']
+        self.scheduler_step = data['scheduler_step']
+        self.metrics = data['metrics']
+
+@dataclasses.dataclass
+class EpochContext(BaseContext):
+    ''' Context to store epoch-level information. '''
+    pass
+
+@dataclasses.dataclass
+class StepContext(BaseContext):
+    ''' Context to store step-level information. '''
+    batch: Any = None
+
+HookReturn = LoopControl | None
+
+def _auto_call(fn: Callable, batch: Any) -> Any:
+    ''' Automatically call fn with unpacked batch if needed. '''
+    if isinstance(batch, (list, tuple)):
+        return fn(*batch)
+    elif isinstance(batch, dict):
+        return fn(**batch)
+    else:
+        return fn(batch)
+
+class _NestedLoopCore(BaseHook):
+    ''' General core hook for training/evaluation loops. '''
+    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
+        trainer.model # Raise DeferHookExec if model is not initialized
+        trainer.model.to(trainer.device)
+
+    def stage(self, parent: 'BatchedModelLoop') -> HookReturn:
+        while True:
+            parent._epoch_context = EpochContext()
+            parent._step_context = None
+            parent.launch_event('epoch', LoopControl.SKIP_EPOCH)
+
+    def epoch(self, parent: 'BatchedModelLoop') -> HookReturn:
+        for _ in parent.dataloader:
+            parent.global_context.fetch += 1
+            parent._step_context = StepContext()
+            parent.step_context.batch = _
+            parent.launch_event('step', LoopControl.SKIP_STEP)
+
+    def before_step(self, trainer: 'Trainer') -> LoopControl | None:
+        def _move_to_device(obj: Any, device: torch.device) -> Any:
+            if isinstance(obj, (torch.Tensor, torch.nn.utils.rnn.PackedSequence)):
+                return obj.to(device, non_blocking=True)
+            elif isinstance(obj, (list, tuple)):
+                return type(obj)(
+                    _move_to_device(item, device) for item in obj
+                )
+            elif isinstance(obj, dict):
+                return {
+                    key: _move_to_device(value, device)
+                    for key, value in obj.items()
+                }
+            else:
+                return obj
+        trainer.step_context.batch = _move_to_device(
+            trainer.step_context.batch, trainer.device
+        )
+
+    def step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        for event in parent.event_sequence:
+            parent.launch_event(event, LoopControl.SKIP_EVENT)
+
+class _TrainerCore(BaseHook):
+    ''' Core hook for training loops. '''
+    def before_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.model.train()
+
+    def forward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        if TYPE_CHECKING:
+            assert parent.step_context.batch is not None
+        parent.step_context['losses'] = _auto_call(
+            parent.model.loss, parent.step_context.batch # type: ignore
+        )
+
+    def after_forward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.forward += 1
+
+    def backward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        if TYPE_CHECKING:
+            assert 'losses' in parent.step_context
+        if parent.step_context.get('loss', None) is None:
+            parent.step_context['loss'] = parent.step_context['losses'].mean()
+        parent.step_context['loss'].backward()
+
+    def after_backward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.backward += 1
+
+    def optimizer_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        for optim in parent.optimizer:
+            optim.step()
+
+    def after_optimizer_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.update += 1
+
+    def lr_scheduler_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        if parent.lr_scheduler is not None:
+            for lr_scheduler in parent.lr_scheduler:
+                lr_scheduler.step()
+
+    def after_lr_scheduler_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.scheduler_step += 1
+
+    def after_step(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.step += 1
+
+    def finalize_epoch(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.epoch += 1
+
+class _EvaluatorCore(BaseHook):
+    ''' Core hook for evaluation loops. '''
+    def check_epoch(self, parent: 'BatchedModelLoop') -> LoopControl | None:
+        parent._epoch_context = EpochContext()
+
+    def before_epoch(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.model.eval()
+
+    def forward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        if TYPE_CHECKING:
+            assert parent.step_context.batch is not None
+        with torch.inference_mode():
+            parent.step_context['result'] = _auto_call(
+                parent.model.predict, parent.step_context.batch  # type: ignore
+            )
+
+    def after_forward(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.global_context.forward += 1
+
+    def after_epoch(self, parent: 'BatchedModelLoop') -> HookReturn:
+        return LoopControl.SKIP_STAGE
+
+    def finalize_epoch(self, parent: 'BatchedModelLoop') -> HookReturn:
+        parent.model.train()
+        parent.global_context.epoch += 1
+
+class BatchedModelLoop():
+    '''
+    Class to manage batched model loops during training or evaluation.
     '''
     def __init__(self):
-        self.hooks: List[Tuple[int, BaseTrainerHook]] = []
-        self.context = GlobalContext()
+        # Contexts
+        self.model_context: ModelContext = ModelContext()
+        self._global_context = GlobalContext()
+        self._epoch_context: EpochContext | None = None
+        self._step_context: StepContext | None = None
         self.exception: Exception | None = None
-        self._hook_sequence: Dict[str, List[Callable[['Trainer'], HookReturn]]] = {}
+
+        # Hooks and events
+        self.event_sequence: List[str] = []
+        self.hooks: List[Tuple[int, BaseHook]] = []
+        self._hook_sequence: Dict[str, List[Callable[[Self], LoopControl | None]]] = {}
+
+        # Execution level
+        self.levels = {
+            'stage': LoopControl.SKIP_STAGE,
+            'epoch': LoopControl.SKIP_EPOCH,
+            'step': LoopControl.SKIP_STEP,
+        }
+
+        # Initialization
+        self._register_hook(_NestedLoopCore(), priority=-2)
+        self.reset_context()
+        self.reset_hook_cache()
+
+    def reset_context(self) -> None:
+        self.model_context = ModelContext()
+        self._global_context = GlobalContext()
+        self._epoch_context = None
+        self._step_context = None
+        self.exception = None
+
+    def reset_hook_cache(self) -> None:
+        self._hook_sequence.clear()
 
     @property
     def global_context(self) -> GlobalContext:
-        return self.context
+        return self._global_context
 
     @property
     def epoch_context(self) -> EpochContext:
-        return self.context.child
+        if self._epoch_context is None:
+            raise DeferHookExec()
+        return self._epoch_context
 
     @property
     def step_context(self) -> StepContext:
-        return self.context.child.child
+        if self._step_context is None:
+            raise DeferHookExec()
+        return self._step_context
+
+    @property
+    def dataloader(self) -> torch.utils.data.DataLoader:
+        if self.model_context.dataloader is None:
+            raise DeferHookExec()
+        return self.model_context.dataloader
 
     @property
     def device(self) -> torch.device:
-        if self.context.device is None:
-            raise ValueError('device is not set yet.')
-        return self.context.device
+        if self.model_context.device is None:
+            raise DeferHookExec()
+        return self.model_context.device
 
     @property
-    def model(self) -> Model:
-        if self.context.model is None:
-            raise ValueError('model is not set yet.')
-        return self.context.model
+    def model(self) -> Module:
+        if self.model_context.model is None:
+            raise DeferHookExec()
+        return self.model_context.model
 
     @property
     def optimizer(self) -> List[Optimizer]:
-        if self.context.optimizer is None:
-            raise ValueError('optimizer is not set yet.')
-        if not isinstance(self.context.optimizer, list):
-            return [self.context.optimizer]
-        return self.context.optimizer
+        if self.model_context.optimizer is None:
+            raise DeferHookExec()
+        return self.model_context.optimizer
 
     @property
     def lr_scheduler(self) -> List[LRScheduler] | None:
-        if self.context.lr_scheduler is None:
+        if self.model_context.lr_scheduler is None:
             return None
-        if not isinstance(self.context.lr_scheduler, list):
-            return [self.context.lr_scheduler]
-        return self.context.lr_scheduler
+        return self.model_context.lr_scheduler
 
-    @property
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
-        if self.context.train_dataloader is None:
-            raise ValueError('train_dataloader is not set yet.')
-        return self.context.train_dataloader
+    def launch_event(self, event_name: str, threshold: LoopControl = LoopControl.NONE):
+        try:
+            try:
+                self._call_hooks(f'check_{event_name}').throw(threshold)
+                # By design,
+                # before_*, *, after_*, finally_* hooks should not return SKIP_*
+                # However, occasionally users may want to enforce skipping.
+                self._call_hooks(f'before_{event_name}').throw(threshold)
+                self._call_hooks(event_name).throw(threshold)
+                self._call_hooks(f'after_{event_name}').throw(threshold)
+            except BreakLoop:
+                raise
+            except Exception as e:
+                # Restoration is not supported
+                if self.exception is None:
+                    self.exception = e
+                    if self._call_hooks('on_exception'):
+                        warnings.warn(
+                            'Ignoring LoopControl returned by on_exception hook.'
+                        )
+                raise
+            finally:
+                try:
+                    self._call_hooks(f'finalize_{event_name}').throw(threshold)
+                except BreakLoop as e:
+                    warnings.warn(
+                        f'Ignoring BreakLoop in finalize_{event_name} hook.'
+                    )
+        except BreakLoop as e:
+            if e.control > threshold:
+                raise e
 
-    def register_hook(self, hook: BaseTrainerHook, priority: int | None = None) -> None:
+    def register_hook(self, hook: BaseHook, priority: int | None = None) -> None:
+        '''
+        Register a hook with an optional priority.
+
+        Args:
+            hook: An instance of BaseHook to register.
+            priority: An optional integer priority. Lower values indicate higher priority. Defaults to appending at the end.
+        '''
         if priority is None:
-            priority = len(self.hooks)
+            priority = self.hooks[-1][0] + 1 if self.hooks else 0
+        if priority < 0:
+            raise ValueError('Priority must be non-negative.')
+        self._register_hook(hook, priority)
+
+    def _register_hook(self, hook: BaseHook, priority: int) -> None:
         bisect.insort(self.hooks, (priority, hook), key=lambda x: x[0])
 
-    def _ctrl(self, control: TrainerControl) -> TrainerControl:
-        actions = (
-            (TrainerControl.SKIP_STEP, StepEnd),
-            (TrainerControl.STOP_TRAINING, TrainEnd),
-        )
-        for flag, exception in actions:
-            if control & flag:
-                raise exception()
-        return control
-
-    def _call_hooks(self, method_name: str) -> TrainerControl:
-        control = TrainerControl.NONE
-        if method_name in self._hook_sequence:
-            hook_seq = self._hook_sequence[method_name]
-            for hook_fn in hook_seq:
-                ret = hook_fn(self)
-                if ret is not None:
-                    control |= ret
-            return control
-
+    def _call_hooks(self, method_name: str) -> LoopControl:
+        control = LoopControl.NONE
         exec_seq = []
-        deferred_hooks: List[BaseTrainerHook] = [
-            hook for _, hook in self.hooks]
-        while deferred_hooks:
-            new_deferred_hooks: List[BaseTrainerHook] = []
-            for hook in deferred_hooks:
-                method = getattr(type(hook), method_name)
-                if method is getattr(BaseTrainerHook, method_name):
-                    # Skip hooks that do not implement this method
-                    continue
-
-                method = getattr(hook, method_name)
+        deferred_methods = self._hook_sequence.get(
+            method_name, [
+                hook[method_name] for _, hook in self.hooks if method_name in hook
+            ]
+        )
+        while deferred_methods:
+            new_deferred_methods = []
+            for method in deferred_methods:
                 try:
                     ret = method(self)
                 except DeferHookExec:
-                    new_deferred_hooks.append(hook)
+                    new_deferred_methods.append(method)
                     continue
-                if ret is NotImplemented:
-                    # Skip hooks that do not implement this method
-                    raise ValueError('Override method returned NotImplemented.')
                 exec_seq.append(method)
                 if ret is not None:
                     control |= ret
-            if len(deferred_hooks) == len(new_deferred_hooks):
+            if len(deferred_methods) == len(new_deferred_methods):
                 # No progress made, break to avoid infinite loop
                 raise RuntimeError(
                     f'Cannot resolve dependencies for hooks in {method_name}.'
                 )
-            deferred_hooks = new_deferred_hooks
+            deferred_methods = new_deferred_methods
 
         self._hook_sequence[method_name] = exec_seq
         return control
 
-    def _train_step(self):
+    def run(
+        self, level: Literal['stage', 'epoch', 'step'] = 'stage',
+        cleanup: bool = True
+    ) -> None:
+        '''
+        Run the specified level of the loop.
+        '''
+        if not self.event_sequence:
+            raise ValueError('No events registered to run.')
+        if cleanup:
+            self.reset_context()
+            self.reset_hook_cache()
         try:
-            ctrl = TrainerControl.NONE
-            self.epoch_context.new_child()
-            # Before step
-            ctrl = self._ctrl(ctrl | self._call_hooks('before_step'))
+            self.launch_event(level, self.levels[level])
+        except BreakLoop:
+            return
 
-            # Fetch data
-            ctrl = self._ctrl(ctrl | self._call_hooks('before_fetch'))
-            try:
-                data = next(self.epoch_context.dataloader_iter)
-            except StopIteration:
-                raise EpochEnd()
-            self.step_context.batch = data
-            ctrl = self._ctrl(ctrl | self._call_hooks('after_fetch'))
-
-            # Forward
-            ctrl = self._ctrl(ctrl | self._call_hooks('before_forward'))
-            if isinstance(self.step_context.batch, (list, tuple)):
-                ret = self.model.loss(*self.step_context.batch)
-            elif isinstance(self.step_context.batch, dict):
-                ret = self.model.loss(**self.step_context.batch)
-            else:
-                ret = self.model.loss(self.step_context.batch)
-            self.step_context.losses = ret
-            ctrl = self._ctrl(ctrl | self._call_hooks('after_forward'))
-            ctrl = self._ctrl(ctrl | self._call_hooks('on_reduce_loss'))
-
-            # Backward
-            ctrl = self._ctrl(ctrl | self._call_hooks('before_backward'))
-            if self.step_context.loss is None:
-                self.step_context.loss = self.step_context.losses.mean()
-            self.step_context.loss.backward()
-            ctrl = self._ctrl(ctrl | self._call_hooks('after_backward'))
-
-            # If backward, increment step count
-            self.epoch_context.increment_data_step()
-            ctrl = self._ctrl(ctrl | self._call_hooks('after_data_step'))
-
-            # Optimizer step
-            ctrl = self._ctrl(ctrl | self._call_hooks("before_optimizer_step"))
-            if ctrl & TrainerControl.SKIP_OPTIMIZER_STEP:
-                raise StepEnd()  # No optimizer step -> no scheduler step
-            for optim in self.optimizer:
-                optim.step()
-            ctrl = self._ctrl(ctrl | self._call_hooks("after_optimizer_step"))
-
-            self.epoch_context.increment_update_step()
-            ctrl = self._ctrl(ctrl | self._call_hooks('after_update_step'))
-
-            # LR scheduler step
-            if self.lr_scheduler is not None:
-                ctrl = self._ctrl(ctrl | self._call_hooks(
-                    'before_lr_scheduler_step'))
-                if ctrl & TrainerControl.SKIP_LR_SCHEDULER_STEP:
-                    raise StepEnd()  # No scheduler step
-                for lr_scheduler in self.lr_scheduler:
-                    lr_scheduler.step()
-                ctrl = self._ctrl(ctrl | self._call_hooks(
-                    'after_lr_scheduler_step'))
-            # After step
-        except (StepEnd, EpochEnd, TrainEnd) as e:
-            if not isinstance(e, StepEnd):
-                raise
-        except Exception as e:
-            self.exception = e
-            ctrl = self._call_hooks("on_exception")
-            if ctrl == TrainerControl.NONE:
-                raise e
-            else:
-                self._ctrl(ctrl)
-        finally:
-            self.exception = None
-            self._ctrl(self._call_hooks('after_step'))
-
-    def _train_epoch(self):
-        # Before epoch
-        self._ctrl(self._call_hooks('before_epoch'))
-
-        while True:
-            try:
-                self._train_step()
-            except StepEnd:
-                continue
-            except EpochEnd:
-                break
-            except TrainEnd:
-                raise
-            finally:
-                self.epoch_context.finalize_child()
-
-        self._ctrl(self._call_hooks('after_epoch'))
-
-    def _train(self):
-        # Before train
-        self._ctrl(self._call_hooks('before_train'))
-        while True:
-            try:
-                self.global_context.new_child()
-                self._train_epoch()
-            except TrainEnd:
-                break
-            finally:
-                self.global_context.increment_epoch()
-                self.global_context.finalize_child()
-
-        # After train
-        self._ctrl(self._call_hooks('after_train'))
+class Trainer(BatchedModelLoop):
+    '''
+    Trainer class to manage training loops with hooks and contexts.
+    '''
+    def __init__(self):
+        super().__init__()
+        self.event_sequence = [
+            'forward', 'backward', 'optimizer_step', 'lr_scheduler_step'
+        ]
+        self._register_hook(_TrainerCore(), priority=-1)
 
     def train(self):
-        # Clear previous hook execution sequence
-        self._hook_sequence.clear()
-        try:
-            self._train()
-        except TrainEnd:
-            return
-        except StopIteration:
-            return
+        ''' Run the training loop. '''
+        self.run('stage')
+
+class Evaluator(BatchedModelLoop):
+    '''
+    Evaluator class to manage evaluation loops with hooks and contexts.
+
+    After evaluation, metrics should be written to epoch_context['metrics']: Dict[str, float] in `finalize_epoch` hook.
+    '''
+
+    def __init__(self):
+        super().__init__()
+        self.event_sequence = ['forward']
+        self._initialized = False
+        self._register_hook(_EvaluatorCore(), priority=-1)
+
+    def set_metrics(self, metrics: Dict[str, float]) -> None:
+        ''' Interface to set evaluation metrics after evaluation. '''
+        self.epoch_context['metrics'] = metrics
+
+    def get_metrics(self) -> Dict[str, float]:
+        ''' Interface to get evaluation metrics after evaluation. '''
+        if 'metrics' not in self.epoch_context:
+            raise ValueError('Metrics have not been set for the current epoch.')
+        return self.epoch_context['metrics']
+
+    def evaluate(self):
+        ''' Run the evaluation loop. '''
+        if not self._initialized:
+            self.run('stage', cleanup=False) # Keep context for evaluation
+        else:
+            self.run('epoch', cleanup=False)
+        self._initialized = True
