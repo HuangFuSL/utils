@@ -92,32 +92,10 @@ class BaseContext():
     '''
     objects: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
-    @staticmethod
-    def _assert_torch_saveable(value: Any) -> None:
-        stack = [value]
-        while stack:
-            item = stack.pop()
-            item_type = type(item)
-            if item_type in _BASE_TYPE or item_type in _TORCH_TYPE:
-                continue
-            if isinstance(item, enum.Enum):
-                continue
-            if item_type in _SEQUENCE_TYPE:
-                stack.extend(item)
-                continue
-            if item_type in _MAPPING_TYPE:
-                stack.extend(item.keys())
-                stack.extend(item.values())
-                continue
-            raise TypeError(
-                f'Unsupported object type: {item_type.__name__}'
-            )
-
     def __getitem__(self, key: str) -> Any:
         return self.objects[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        self._assert_torch_saveable(value)
         self.objects[key] = value
 
     def __contains__(self, key: str) -> bool:
@@ -127,17 +105,13 @@ class BaseContext():
         return self.objects.get(key, default)
 
     def setdefault(self, key: str, default: Any) -> Any:
-        if key not in self.objects:
-            self._assert_torch_saveable(default)
         return self.objects.setdefault(key, default)
 
     def to_dict(self) -> Dict[str, Any]:
-        self._assert_torch_saveable(self.objects)
         return {'objects': self.objects}
 
     def load_dict(self, data: Dict[str, Any]):
         objects = data.get('objects', {})
-        self._assert_torch_saveable(objects)
         self.objects = objects
 
 @dataclasses.dataclass
@@ -190,7 +164,7 @@ class GlobalContext(BaseContext):
     scheduler_step: int = 0
     step: int = 0
     # Epoch, step, metric dict
-    metrics: List[Tuple[int, int, Dict[str, float]]] = dataclasses.field(
+    metrics: List[Tuple[int, int, Dict[str, Any]]] = dataclasses.field(
         default_factory=list
     )
 
@@ -549,7 +523,7 @@ class Evaluator(BatchedModelLoop):
     '''
     Evaluator class to manage evaluation loops with hooks and contexts.
 
-    After evaluation, metrics should be written to epoch_context['metrics']: Dict[str, float] in `finalize_epoch` hook.
+    After evaluation, metrics should be written to epoch_context['metrics']: Dict[str, Any] in `finalize_epoch` hook.
     '''
 
     def __init__(self):
@@ -558,11 +532,11 @@ class Evaluator(BatchedModelLoop):
         self._initialized = False
         self._register_hook(_EvaluatorCore(), priority=-1)
 
-    def set_metrics(self, metrics: Dict[str, float]) -> None:
+    def set_metrics(self, metrics: Dict[str, Any]) -> None:
         ''' Interface to set evaluation metrics after evaluation. '''
         self.epoch_context['metrics'] = metrics
 
-    def get_metrics(self) -> Dict[str, float]:
+    def get_metrics(self) -> Dict[str, Any]:
         ''' Interface to get evaluation metrics after evaluation. '''
         if 'metrics' not in self.epoch_context:
             raise ValueError('Metrics have not been set for the current epoch.')
