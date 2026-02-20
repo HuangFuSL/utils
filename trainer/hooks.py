@@ -204,6 +204,7 @@ class TqdmHook(BaseHook):
         self.unit = unit
         self.metrics_keys = metrics_keys
         self.floatfmt = floatfmt
+        self._last_metrics_idx = -1
 
     def _refresh_metrics_postfix(self, trainer: Trainer) -> None:
         if self.metrics_keys is None or not trainer.global_context.metrics:
