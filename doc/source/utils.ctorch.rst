@@ -53,6 +53,11 @@ Trainer Utilities
    :show-inheritance:
    :undoc-members:
 
+.. automodule:: utils.trainer.hooks
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 Utilities for Variable Length Sequences
 ---------------------------------------
 

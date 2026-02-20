@@ -365,7 +365,7 @@ class LoadCheckpointHook(BaseHook):
 
 class ResumeCheckpointHook(BaseHook):
     '''
-    Hook to load model checkpoints before training. If used together with InitHooks, this hook will be executed after them.
+    Hook to load model checkpoints before training. If used together with InitHooks, this hook should be executed after them.
 
     Args:
         checkpoint_path: The base path of the checkpoint to be loaded.
@@ -640,10 +640,18 @@ class WandBHook(BaseHook):
     The hook must be registered with the least priority (largest priority number)
 
     Items will be logged:
+
     - Losses from ``step_context['loss']`` and ``step_context['losses']``, both are PyTorch tensors.
     - Metrics gathered from ``global_context.metrics[-1]``.
-    - Learning rates from optimizer.param_groups.
-    - Additional entries from step_context defined in `additional_entries`
+    - Learning rates from ``optimizer.param_groups``.
+    - Additional entries from ``step_context`` defined in ``additional_entries``
+
+    PyTorch tensors are handled according to its shape:
+
+    - Scalar tensors are logged as numbers.
+    - 1D tensors are logged as histograms.
+    - 2D tensors with shape (2, N) are logged as line plots, otherwise as black-white image.
+    - 3D tensors with shape (C, H, W) where C is 1, 3 or 4 are logged as images. Other shapes are not supported.
 
     Args:
         project: The wandb project name.
@@ -653,6 +661,7 @@ class WandBHook(BaseHook):
         flush_interval: The interval (in steps) at which to flush the logged data to wandb, to reduce device synchronization overhead.
         loss_keys: The names of the losses.
         optimizer_keys: The names of the optimizers.
+        additional_entries: Additional entries in step_context to be logged, either a list of entry names (logged with the same name) or a dict of entry name and logged name pairs.
     '''
     def __init__(
         self, project: str, entity: str | None = None,
