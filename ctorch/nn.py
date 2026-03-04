@@ -127,33 +127,6 @@ class Module(torch.nn.Module):
             )
         return self._numel
 
-class Model(Module, abc.ABC):
-    '''
-    A base class for all models in ctorch. Inherits from ``ctorch.nn.Module``.
-    '''
-    def __init__(self):
-        super().__init__()
-
-    @abc.abstractmethod
-    def loss(self, *args, **kwargs) -> torch.Tensor:
-        '''
-        Compute the loss for the model. Should be overridden by subclasses.
-
-        Returns:
-            torch.Tensor: The computed loss.
-        '''
-        return NotImplemented
-
-    @abc.abstractmethod
-    def predict(self, *args, **kwargs) -> torch.Tensor:
-        '''
-        Make predictions using the model. Can be overridden by subclasses.
-
-        Returns:
-            torch.Tensor: The model's predictions.
-        '''
-        return NotImplemented
-
 class Activation(Module):
     '''
     Arbitrary activation function module.
