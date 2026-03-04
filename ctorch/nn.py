@@ -222,8 +222,6 @@ class DNN(Module):
             raise ValueError('DNN must have at least one layer.')
         if any(dim <= 0 for dim in layer_dims):
             raise ValueError('All layer dimensions must be positive integers.')
-        if residual and layer_dims[0] != layer_dims[-1]:
-            raise ValueError('Residual connections require input and output dimensions to match.')
         if dropout is not None and (dropout < 0.0 or dropout > 1.0):
             raise ValueError('Dropout must be between 0.0 and 1.0.')
         # Warning conditions
@@ -241,6 +239,11 @@ class DNN(Module):
             self.rev = GradientReversalLayer()
         else:
             self.rev = torch.nn.Identity()
+        if residual and layer_dims[0] != layer_dims[-1]:
+            self.res = torch.nn.Linear(layer_dims[0], layer_dims[-1], bias=False)
+        else:
+            self.res = torch.nn.Identity()
+
         for i, (in_dim, out_dim) in enumerate(zip(in_dims, out_dims)):
             current_layer = []
             current_layer.append(layer_type(in_dim, out_dim, bias))
@@ -273,7 +276,7 @@ class DNN(Module):
         y = self.seq(x)
 
         if self.residual:
-            y = y + x
+            y = y + self.res(x)
         return y
 
 class MonotonicLinear(Module):
