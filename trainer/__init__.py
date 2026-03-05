@@ -5,8 +5,9 @@
 import bisect
 import dataclasses
 import enum
+import functools
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Self, Tuple, TypeVar, Generic
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Set, Tuple, TypeVar
 
 import torch
 
@@ -66,9 +67,49 @@ class BaseHook():
     '''
     Base class for hooks. All methods return None by default.
     Subclasses can override the methods they need. Hooks can be called
-    via hook(method_name, parent), which will dispatch to the appropriate method.
+    via hook(method_name), which will dispatch to the appropriate method.
     '''
-    _parent: 'BatchedModelLoop | None' = None
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
+        original_init = cls.__init__
+
+        @functools.wraps(original_init)
+        def wrapped_init(self, *a, **kw):
+            object.__setattr__(self, "_track_hp", True)
+            object.__setattr__(self, "_unresolved_hp", set())
+            object.__setattr__(self, "_parent", None)
+            try:
+                original_init(self, *a, **kw)
+            finally:
+                object.__setattr__(self, "_track_hp", False)
+
+        cls.__init__ = wrapped_init
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if not object.__getattribute__(self, "_track_hp"):
+            return
+        if name.startswith("_"):
+            return
+        if HyperParam.check(value):
+            object.__getattribute__(self, "_unresolved_hp").add(name)
+        else:
+            object.__getattribute__(self, "_unresolved_hp").discard(name)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith('_'):
+            return super().__getattribute__(name)
+        attr = super().__getattribute__(name)
+        unresolved_hp = super().__getattribute__("_unresolved_hp")
+        if not unresolved_hp or name not in unresolved_hp:
+            return attr
+        if super().__getattribute__('_parent') is None:
+            return attr
+        resolved_attr = HyperParam.resolve(attr, self)
+        object.__setattr__(self, name, resolved_attr)
+        if not HyperParam.check(resolved_attr):
+            unresolved_hp.discard(name)
+        return resolved_attr
 
     @property
     def parent(self) -> 'BatchedModelLoop':
@@ -81,7 +122,7 @@ class BaseHook():
         self._parent = value
 
     def __contains__(self, item: str) -> bool:
-        attr = getattr(self, item, None)
+        attr = getattr(type(self), item, None)
         return callable(attr)
 
     def __getitem__(self, method_name: str):
@@ -89,16 +130,6 @@ class BaseHook():
 
     def __call__(self, method_name: str) -> LoopControl | None:
         return self[method_name]()
-
-_BASE_TYPE = {
-    type(None), bool, int, float, complex, str, bytes, bytearray
-}
-_SEQUENCE_TYPE = {list, tuple, set, frozenset}
-_MAPPING_TYPE = {dict}
-_TORCH_TYPE = {
-    torch.Tensor, torch.device, torch.dtype, torch.Size,
-    torch.nn.utils.rnn.PackedSequence
-}
 
 @dataclasses.dataclass
 class BaseContext():
@@ -167,29 +198,39 @@ class ModelContext(BaseContext):
             for sched, state in zip(self.lr_scheduler, data['lr_scheduler']):
                 sched.load_state_dict(state)
 
-class HyperParams(Generic[T]):
-    def __init__(self, name: str):
-        self.name = name
-
-    def __get__(self, obj: 'BaseHook', objtype) -> T:
-        if obj is None:
-            return self
-        return HyperParams.resolve(self, obj.parent)
+@dataclasses.dataclass(slots=True, frozen=True)
+class HyperParam():
+    name: str
 
     @classmethod
-    def resolve(cls, obj: 'T | HyperParams[T]', parent: 'BatchedModelLoop') -> T:
-        if isinstance(obj, HyperParams):
-            if obj.name not in parent.global_context.hyperparams:
-                raise DeferHookExec()
-            return parent.global_context.hyperparams[obj.name]
-        elif isinstance(obj, (list, tuple, set, frozenset)):
-            return type(obj)(cls.resolve(item, parent) for item in obj)  # type: ignore
+    def resolve(cls, obj: Any, hook: 'BaseHook') -> Any:
+        if isinstance(obj, cls):
+            if obj.name in hook.parent.global_context.hyperparams:
+                return hook.parent.global_context.hyperparams[obj.name]
+            raise DeferHookExec()
+        elif isinstance(obj, (list, set, frozenset)):
+            return [cls.resolve(item, hook) for item in obj]
+        elif isinstance(obj, tuple):
+            return tuple(cls.resolve(item, hook) for item in obj)
         elif isinstance(obj, dict):
+            # Dict[str, Any] type
             return {
-                key: cls.resolve(value, parent) for key, value in obj.items()
-            }  # type: ignore
+                key: cls.resolve(value, hook)
+                for key, value in obj.items()
+            }
         else:
             return obj
+
+    @classmethod
+    def check(cls, obj: Any) -> bool:
+        if isinstance(obj, cls):
+            return True
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            return any(cls.check(item) for item in obj)
+        elif isinstance(obj, dict):
+            return any(cls.check(value) for value in obj.values())
+        else:
+            return False
 
 @dataclasses.dataclass
 class GlobalContext(BaseContext):

@@ -12,7 +12,7 @@ import warnings
 
 from torch.profiler import profile
 
-from . import BaseHook, DeferHookExec, Trainer, LoopControl, Evaluator
+from . import BaseHook, DeferHookExec, LoopControl, Evaluator
 from ..ctorch.device import get_best_device
 
 
@@ -261,14 +261,22 @@ class WeightedLossHook(BaseHook):
         loss_weights: The weights for each loss.
     '''
     def __init__(self, loss_weights: List[float]):
-        self.loss_weights = torch.tensor(loss_weights)
+        self.loss_weights = loss_weights
+        self.loss_weights_tensor = None
 
     def before_stage(self) -> LoopControl | None:
-        self.loss_weights = self.loss_weights.to(self.parent.device)
+        if self.loss_weights_tensor is None:
+            self.loss_weights_tensor = torch.tensor(self.loss_weights)
+        self.loss_weights_tensor = self.loss_weights_tensor.to(
+            self.parent.device)
 
     def after_forward(self) -> LoopControl | None:
+        if self.loss_weights_tensor is None:
+            self.loss_weights_tensor = torch.tensor(
+                self.loss_weights, device=self.parent.device
+            )
         losses = self.parent.step_context['losses']
-        weights = self.loss_weights.to(losses.dtype)
+        weights = self.loss_weights_tensor.to(losses.dtype)
         assert losses is not None
         self.parent.step_context['loss'] = (losses @ weights).mean()
 
