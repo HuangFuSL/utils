@@ -31,9 +31,9 @@ class InitModelHook(BaseHook):
         self.args = args
         self.kwargs = kwargs or {}
 
-    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         model = self.model_cls(*self.args, **self.kwargs)
-        trainer.model_context.model = model
+        self.parent.model_context.model = model
 
 
 class InitOptimizerHook(BaseHook):
@@ -49,10 +49,10 @@ class InitOptimizerHook(BaseHook):
         self.optim_cls = optim_cls
         self.kwargs = kwargs
 
-    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
-        trainer.device # DeferHookExec if device is not initialized
-        trainer.model_context.optimizer = [self.optim_cls(
-            trainer.model.parameters(), **self.kwargs
+    def before_stage(self) -> LoopControl | None:
+        self.parent.device # DeferHookExec if device is not initialized
+        self.parent.model_context.optimizer = [self.optim_cls(
+            self.parent.model.parameters(), **self.kwargs
         )]
 
 
@@ -66,13 +66,13 @@ class InitLRSchedulerHook(BaseHook):
         self.lr_scheduler_cls = lr_scheduler_cls
         self.kwargs = kwargs
 
-    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
-        if len(trainer.optimizer) != 1:
+    def before_stage(self) -> LoopControl | None:
+        if len(self.parent.optimizer) != 1:
             raise ValueError(
                 'Length of lr_scheduler_cls must match length of optimizer.'
             )
-        trainer.model_context.lr_scheduler = [
-            self.lr_scheduler_cls(trainer.optimizer[0], **self.kwargs)
+        self.parent.model_context.lr_scheduler = [
+            self.lr_scheduler_cls(self.parent.optimizer[0], **self.kwargs)
         ]
 
 
@@ -91,9 +91,9 @@ class InitDataloaderHook(BaseHook):
         self.args = args
         self.kwargs = kwargs or {}
 
-    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         dataloader = self.dataloader_cls(*self.args, **self.kwargs)
-        trainer.model_context.dataloader = dataloader
+        self.parent.model_context.dataloader = dataloader
 
 
 class InitDeviceHook(BaseHook):
@@ -109,8 +109,8 @@ class InitDeviceHook(BaseHook):
             device = get_best_device()
         self.device = torch.device(device)
 
-    def before_stage(self, trainer: 'Trainer') -> LoopControl | None:
-        trainer.model_context.device = self.device
+    def before_stage(self) -> LoopControl | None:
+        self.parent.model_context.device = self.device
 
 class GradientClipHook(BaseHook):
     '''
@@ -125,9 +125,9 @@ class GradientClipHook(BaseHook):
         self.max_norm = max_norm
         self.norm_type = norm_type
 
-    def before_optimizer_step(self, trainer: 'Trainer') -> LoopControl | None:
+    def before_optimizer_step(self) -> LoopControl | None:
         torch.nn.utils.clip_grad_norm_(
-            trainer.model.parameters(), self.max_norm, self.norm_type,
+            self.parent.model.parameters(), self.max_norm, self.norm_type,
             error_if_nonfinite=self.error_if_nonfinite
         )
 
@@ -143,17 +143,17 @@ class DefaultZeroGradHook(BaseHook):
     def __init__(self, per_step: int = 1):
         self.per_step = per_step  # Single step case
 
-    def before_forward(self, trainer: 'Trainer') -> LoopControl | None:
-        if trainer.global_context.backward % self.per_step == 0:
-            for optim in trainer.optimizer:
+    def before_forward(self) -> LoopControl | None:
+        if self.parent.global_context.backward % self.per_step == 0:
+            for optim in self.parent.optimizer:
                 optim.zero_grad()
 
-    def check_optimizer_step(self, trainer: 'Trainer') -> LoopControl | None:
-        if trainer.global_context.backward % self.per_step != 0:
+    def check_optimizer_step(self) -> LoopControl | None:
+        if self.parent.global_context.backward % self.per_step != 0:
             return LoopControl.SKIP_EVENT
 
 class SuppressExceptionHook(BaseHook):
-    def on_exception(self, trainer: 'Trainer') -> LoopControl | None:
+    def on_exception(self) -> LoopControl | None:
         return LoopControl.SKIP_STEP
 
 
@@ -168,8 +168,8 @@ class MaxEpochHook(BaseHook):
     def __init__(self, num_epochs: int):
         self.num_epochs = num_epochs
 
-    def check_epoch(self, trainer: Trainer) -> LoopControl | None:
-        if trainer.global_context.epoch >= self.num_epochs:
+    def check_epoch(self) -> LoopControl | None:
+        if self.parent.global_context.epoch >= self.num_epochs:
             return LoopControl.SKIP_STAGE
 
 
@@ -184,8 +184,8 @@ class MaxStepHook(BaseHook):
     def __init__(self, num_steps: int):
         self.num_steps = num_steps
 
-    def check_step(self, trainer: Trainer) -> LoopControl | None:
-        if trainer.global_context.step >= self.num_steps:
+    def check_step(self) -> LoopControl | None:
+        if self.parent.global_context.step >= self.num_steps:
             return LoopControl.SKIP_STAGE
 
 
@@ -206,10 +206,10 @@ class TqdmHook(BaseHook):
         self.floatfmt = floatfmt
         self._last_metrics_idx = -1
 
-    def _refresh_metrics_postfix(self, trainer: Trainer) -> None:
-        if self.metrics_keys is None or not trainer.global_context.metrics:
+    def _refresh_metrics_postfix(self) -> None:
+        if self.metrics_keys is None or not self.parent.global_context.metrics:
             return
-        metrics_log = trainer.global_context.metrics
+        metrics_log = self.parent.global_context.metrics
         if len(metrics_log) - 1 == self._last_metrics_idx:
             return
         self._last_metrics_idx = len(metrics_log) - 1
@@ -229,26 +229,26 @@ class TqdmHook(BaseHook):
 
         self.tqdm.set_postfix(postfix, refresh=False)
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         import tqdm
         self.tqdm = tqdm.tqdm(unit=' ' + self.unit)
 
-    def before_step(self, trainer: Trainer) -> LoopControl | None:
+    def before_step(self) -> LoopControl | None:
         if self.unit == 'data_step':
             self.tqdm.update(1)
-            self._refresh_metrics_postfix(trainer)
+            self._refresh_metrics_postfix()
 
-    def after_optimizer_step(self, trainer: Trainer) -> LoopControl | None:
+    def after_optimizer_step(self) -> LoopControl | None:
         if self.unit == 'update_step':
             self.tqdm.update(1)
-            self._refresh_metrics_postfix(trainer)
+            self._refresh_metrics_postfix()
 
-    def after_epoch(self, trainer: Trainer) -> LoopControl | None:
+    def after_epoch(self) -> LoopControl | None:
         if self.unit == 'epoch':
             self.tqdm.update(1)
-            self._refresh_metrics_postfix(trainer)
+            self._refresh_metrics_postfix()
 
-    def finalize_stage(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_stage(self) -> LoopControl | None:
         if hasattr(self, "tqdm"):
             self.tqdm.close()
 
@@ -263,14 +263,14 @@ class WeightedLossHook(BaseHook):
     def __init__(self, loss_weights: List[float]):
         self.loss_weights = torch.tensor(loss_weights)
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
-        self.loss_weights = self.loss_weights.to(trainer.device)
+    def before_stage(self) -> LoopControl | None:
+        self.loss_weights = self.loss_weights.to(self.parent.device)
 
-    def after_forward(self, trainer: Trainer) -> LoopControl | None:
-        losses = trainer.step_context['losses']
+    def after_forward(self) -> LoopControl | None:
+        losses = self.parent.step_context['losses']
         weights = self.loss_weights.to(losses.dtype)
         assert losses is not None
-        trainer.step_context['loss'] = (losses @ weights).mean()
+        self.parent.step_context['loss'] = (losses @ weights).mean()
 
 class ProfileHook(BaseHook):
     '''
@@ -290,28 +290,28 @@ class ProfileHook(BaseHook):
         self.export_path = export_path
         self.prof_kwargs = kwargs
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
-        trainer.global_context['profile'] = profile(
+    def before_stage(self) -> LoopControl | None:
+        self.parent.global_context['profile'] = profile(
             experimental_config=torch._C._profiler._ExperimentalConfig(
                 verbose=True),
             **self.prof_kwargs
         )
-        trainer.global_context['profile'].__enter__()
+        self.parent.global_context['profile'].__enter__()
 
-    def check_step(self, trainer: Trainer) -> LoopControl | None:
-        if trainer.global_context.step >= self.num_steps:
+    def check_step(self) -> LoopControl | None:
+        if self.parent.global_context.step >= self.num_steps:
             return LoopControl.SKIP_STAGE
 
-    def finalize_step(self, trainer: Trainer) -> LoopControl | None:
-        trainer.global_context['profile'].step()
+    def finalize_step(self) -> LoopControl | None:
+        self.parent.global_context['profile'].step()
 
-    def finalize_stage(self, trainer: Trainer) -> LoopControl | None:
-        exc = trainer.exception
+    def finalize_stage(self) -> LoopControl | None:
+        exc = self.parent.exception
         exc_type = None if exc is None else type(exc)
         tb = None if exc is None else exc.__traceback__
-        trainer.global_context['profile'].__exit__(exc_type, exc, tb)
+        self.parent.global_context['profile'].__exit__(exc_type, exc, tb)
         if self.export_path is not None:
-            trainer.global_context['profile'].export_chrome_trace(f"{self.export_path}/trace.json")
+            self.parent.global_context['profile'].export_chrome_trace(f"{self.export_path}/trace.json")
 
 class LoadCheckpointHook(BaseHook):
     '''
@@ -345,9 +345,9 @@ class LoadCheckpointHook(BaseHook):
 
         self.checkpoint_path = checkpoint_path
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         # Check DeferHookExec conditions
-        _ = trainer.model, trainer.device
+        _ = self.parent.model, self.parent.device
         # Warn if loading from exception checkpoint
         if os.path.exists(os.path.join(self.checkpoint_path, 'exception.txt')):
             warnings.warn(
@@ -355,13 +355,13 @@ class LoadCheckpointHook(BaseHook):
             )
         # Only load model context and global context
         # Since epoch and step context are to be created during runtime
-        device = trainer.device
+        device = self.parent.device
         load_ctx = lambda filename: torch.load(
             os.path.join(self.checkpoint_path, filename), map_location=device
         )
-        trainer.model_context.load_dict(load_ctx('model_context.pt'))
-        trainer.global_context.load_dict(load_ctx('global_context.pt'))
-        trainer.model_context.device = device
+        self.parent.model_context.load_dict(load_ctx('model_context.pt'))
+        self.parent.global_context.load_dict(load_ctx('global_context.pt'))
+        self.parent.model_context.device = device
 
 class ResumeCheckpointHook(BaseHook):
     '''
@@ -396,10 +396,10 @@ class ResumeCheckpointHook(BaseHook):
         self.checkpoint_path = checkpoint_path
 
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         # Check DeferHookExec conditions
-        _ = trainer.model, trainer.optimizer, trainer.device
-        if trainer.model_context.lr_scheduler is None:
+        _ = self.parent.model, self.parent.optimizer, self.parent.device
+        if self.parent.model_context.lr_scheduler is None:
             # Strict resume here - must load as is
             if any(
                 fname == 'has_lr_scheduler'
@@ -421,14 +421,14 @@ class ResumeCheckpointHook(BaseHook):
             )
         # Only load model context and global context
         # Since epoch and step context are to be created during runtime
-        device = trainer.device
+        device = self.parent.device
         load_ctx = lambda filename: torch.load(
             os.path.join(self.checkpoint_path, filename),
             map_location=device, weights_only=False
         )
-        trainer.model_context.load_dict(load_ctx('model_context.pt'))
-        trainer.global_context.load_dict(load_ctx('global_context.pt'))
-        trainer.model_context.device = device
+        self.parent.model_context.load_dict(load_ctx('model_context.pt'))
+        self.parent.global_context.load_dict(load_ctx('global_context.pt'))
+        self.parent.model_context.device = device
 
 
 class SaveCheckpointHook(BaseHook):
@@ -461,7 +461,7 @@ class SaveCheckpointHook(BaseHook):
             )
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-    def save(self, dir_path: str, trainer: Trainer) -> None:
+    def save(self, dir_path: str) -> None:
         tmp_dir = dir_path + '_tmp'
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir)
@@ -473,21 +473,21 @@ class SaveCheckpointHook(BaseHook):
         save_ctx = lambda ctx, filename: torch.save(
             ctx, os.path.join(tmp_dir, filename)
         )
-        save_ctx(trainer.model_context.to_dict(), 'model_context.pt')
-        save_ctx(trainer.global_context.to_dict(), 'global_context.pt')
+        save_ctx(self.parent.model_context.to_dict(), 'model_context.pt')
+        save_ctx(self.parent.global_context.to_dict(), 'global_context.pt')
         # Handle lr_scheduler
-        if trainer.model_context.lr_scheduler is not None:
+        if self.parent.model_context.lr_scheduler is not None:
             open(os.path.join(tmp_dir, 'has_lr_scheduler'), 'a').close()
 
         # Save exception info if any
-        if trainer.exception is not None:
+        if self.parent.exception is not None:
             exception_path = os.path.join(tmp_dir, 'exception.txt')
             with open(exception_path, 'w') as f:
                 f.write(''.join(
                     traceback.format_exception(
-                        type(trainer.exception),
-                        trainer.exception,
-                        trainer.exception.__traceback__
+                        type(self.parent.exception),
+                        self.parent.exception,
+                        self.parent.exception.__traceback__
                     )
                 ))
 
@@ -495,7 +495,7 @@ class SaveCheckpointHook(BaseHook):
         os.rename(tmp_dir, dir_path)
 
         # Create a `latest` symlink if no exception
-        if trainer.exception is None:
+        if self.parent.exception is None:
             latest_path = os.path.join(self.checkpoint_dir, 'latest')
             if os.path.islink(latest_path) or os.path.exists(latest_path):
                 os.remove(latest_path)
@@ -506,32 +506,32 @@ class SaveCheckpointHook(BaseHook):
             os.symlink(latest_target, latest_tmp)
             os.replace(latest_tmp, latest_path)
 
-    def after_step(self, trainer: Trainer) -> LoopControl | None:
+    def after_step(self) -> LoopControl | None:
         if self.save_interval_step > 0 and \
-           trainer.global_context.step % self.save_interval_step == 0:
+           self.parent.global_context.step % self.save_interval_step == 0:
             step_dir = os.path.join(
-                self.checkpoint_dir, f'step_{trainer.global_context.step}'
+                self.checkpoint_dir, f'step_{self.parent.global_context.step}'
             )
-            self.save(step_dir, trainer)
+            self.save(step_dir)
 
-    def finalize_epoch(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_epoch(self) -> LoopControl | None:
         if self.save_interval_epoch > 0 and \
-           trainer.global_context.epoch % self.save_interval_epoch == 0:
+           self.parent.global_context.epoch % self.save_interval_epoch == 0:
             epoch_dir = os.path.join(
-                self.checkpoint_dir, f'epoch_{trainer.global_context.epoch}'
+                self.checkpoint_dir, f'epoch_{self.parent.global_context.epoch}'
             )
-            self.save(epoch_dir, trainer)
+            self.save(epoch_dir)
 
-    def finalize_stage(self, trainer: Trainer) -> LoopControl | None:
-        if trainer.exception is None:
+    def finalize_stage(self) -> LoopControl | None:
+        if self.parent.exception is None:
             final_dir = os.path.join(self.checkpoint_dir, 'final')
-            self.save(final_dir, trainer)
+            self.save(final_dir)
 
-    def on_exception(self, trainer: Trainer) -> LoopControl | None:
+    def on_exception(self) -> LoopControl | None:
         exception_dir = os.path.join(
             self.checkpoint_dir, 'exception'
         )
-        self.save(exception_dir, trainer)
+        self.save(exception_dir)
 
 
 class EvaluateHook(BaseHook):
@@ -554,34 +554,34 @@ class EvaluateHook(BaseHook):
         self.eval_interval_epoch = eval_interval_epoch
         self.copy = copy
 
-    def _eval(self, trainer: Trainer) -> None:
+    def _eval(self) -> None:
         if self.copy:
-           self.evaluator.model.load_state_dict(trainer.model.state_dict())
+           self.evaluator.model.load_state_dict(self.parent.model.state_dict())
         else:
-            self.evaluator.model_context.device = trainer.device
-            self.evaluator.model_context.model = trainer.model
+            self.evaluator.model_context.device = self.parent.device
+            self.evaluator.model_context.model = self.parent.model
         self.evaluator.evaluate()
         new_metrics = self.evaluator.get_metrics().copy()
-        if trainer.global_context.metrics:
-            if trainer.global_context.metrics[-1][1] == trainer.global_context.step:
+        if self.parent.global_context.metrics:
+            if self.parent.global_context.metrics[-1][1] == self.parent.global_context.step:
                 # Avoid duplicate metrics for the same step
-                trainer.global_context.metrics[-1][-1].update(new_metrics)
+                self.parent.global_context.metrics[-1][-1].update(new_metrics)
                 return
-        trainer.global_context.metrics.append((
-            trainer.global_context.epoch,
-            trainer.global_context.step,
+        self.parent.global_context.metrics.append((
+            self.parent.global_context.epoch,
+            self.parent.global_context.step,
             new_metrics
         ))
 
-    def after_step(self, trainer: Trainer) -> LoopControl | None:
+    def after_step(self) -> LoopControl | None:
         if self.eval_interval_step > 0 and \
-            trainer.global_context.step % self.eval_interval_step == 0:
-            self._eval(trainer)
+            self.parent.global_context.step % self.eval_interval_step == 0:
+            self._eval()
 
-    def finalize_epoch(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_epoch(self) -> LoopControl | None:
         if self.eval_interval_epoch > 0 and \
-            trainer.global_context.epoch % self.eval_interval_epoch == 0:
-            self._eval(trainer)
+            self.parent.global_context.epoch % self.eval_interval_epoch == 0:
+            self._eval()
 
 class EarlyStoppingHook(BaseHook):
     '''
@@ -604,12 +604,12 @@ class EarlyStoppingHook(BaseHook):
         self.num_bad_evals = 0
         self.num_evaluations = 0
 
-    def check_step(self, trainer: Trainer) -> LoopControl | None:
-        if self.num_evaluations == len(trainer.global_context.metrics):
+    def check_step(self) -> LoopControl | None:
+        if self.num_evaluations == len(self.parent.global_context.metrics):
             # No new evaluation come in
             return None
         # Update best metric
-        _, _, new_metrics = trainer.global_context.metrics[-1]
+        _, _, new_metrics = self.parent.global_context.metrics[-1]
 
         if self.monitor not in new_metrics:
             raise ValueError(f'Monitored metric {self.monitor} not found in evaluation metrics.')
@@ -630,7 +630,7 @@ class EarlyStoppingHook(BaseHook):
             self.num_bad_evals += 1
         else:
             self.num_bad_evals = 0
-        self.num_evaluations = len(trainer.global_context.metrics)
+        self.num_evaluations = len(self.parent.global_context.metrics)
         if self.num_bad_evals >= self.patience:
             return LoopControl.SKIP_STAGE
 
@@ -688,7 +688,7 @@ class WandBHook(BaseHook):
         else:
             self.additional_entries = additional_entries or {}
 
-    def before_stage(self, trainer: Trainer) -> LoopControl | None:
+    def before_stage(self) -> LoopControl | None:
         self.wandb_run = self.wandb.init(
             project=self.project, entity=self.entity,
             name=self.run_name, config=self.config
@@ -714,7 +714,7 @@ class WandBHook(BaseHook):
                         xs=v[0].cpu().numpy(), ys=v[1].cpu().numpy()
                     )
                 elif v.dim() == 2 or (v.dim() == 3 and v.shape[0] in [1, 3, 4]):
-                    data[k] = self.wandb.Image(v.cpu(), normalize=True) # CHW
+                    data[k] = self.wandb.Image(v.numpy(force=True), normalize=True) # CHW
                 else:
                     raise ValueError(f'Unsupported tensor shape {v.shape} for logging.')
             else:
@@ -730,58 +730,59 @@ class WandBHook(BaseHook):
                 )
             self.pending_data.clear()
 
-    def before_step(self, trainer: Trainer) -> LoopControl | None:
+    def before_step(self) -> LoopControl | None:
         # commit data
         # Some metrics are logged in finalize_epoch, which happens after finalize_step
         # So, here must flush in before_step
-        if self.pending_data and trainer.global_context.step % self.flush_interval == 0:
+        if self.pending_data and self.parent.global_context.step % self.flush_interval == 0:
             self._flush()
 
-    def _add_metrics(self, trainer: Trainer):
-        if len(trainer.global_context.metrics) == self.num_evaluations:
+    def _add_metrics(self):
+        if len(self.parent.global_context.metrics) == self.num_evaluations:
             # No new evaluation come in
             return
-        *_, metrics = trainer.global_context.metrics[-1]
-        step = trainer.global_context.step - 1 # Align with the step at which losses are computed
+        *_, metrics = self.parent.global_context.metrics[-1]
+        step = self.parent.global_context.step - 1 # Align with the step at which losses are computed
         for key, value in metrics.items():
             self._write_data(step, f'metrics/{key}', value)
-        self.num_evaluations = len(trainer.global_context.metrics)
+        self.num_evaluations = len(self.parent.global_context.metrics)
 
-    def finalize_optimizer_step(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_optimizer_step(self) -> LoopControl | None:
         # Log learning rate
-        step = trainer.global_context.step
-        if self.optimizer_keys and len(trainer.optimizer) != len(self.optimizer_keys):
+        step = self.parent.global_context.step
+        if self.optimizer_keys and len(self.parent.optimizer) != len(self.optimizer_keys):
             raise ValueError('Unmatched number of optimizers.')
-        for i, optim in enumerate(trainer.optimizer):
+        for i, optim in enumerate(self.parent.optimizer):
             name = self.optimizer_keys[i] if self.optimizer_keys else i
             for j, param_group in enumerate(optim.param_groups):
                 self._write_data(step, f'lr/{name}/{j}', param_group['lr'])
 
-    def finalize_backward(self, trainer: Trainer) -> LoopControl | None:
-        step = trainer.global_context.step
-        if 'loss' in trainer.step_context:
-            self._write_data(step, 'loss', trainer.step_context['loss'])
-        if 'losses' in trainer.step_context:
-            losses = trainer.step_context['losses'].reshape(-1).detach()
+    def finalize_backward(self) -> LoopControl | None:
+        step = self.parent.global_context.step
+        if 'loss' in self.parent.step_context:
+            self._write_data(step, 'loss', self.parent.step_context['loss'])
+        if 'losses' in self.parent.step_context:
+            losses = self.parent.step_context['losses'].reshape(-1).detach()
             if self.loss_keys and len(self.loss_keys) != losses.numel():
                 raise ValueError('Unmatched number of losses.')
             for i in range(losses.numel()):
                 name = self.loss_keys[i] if self.loss_keys else i
                 self._write_data(step, f'losses/{name}', losses[i])
 
-    def finalize_step(self, trainer: Trainer) -> LoopControl | None:
-        self._add_metrics(trainer)
+    def finalize_step(self) -> LoopControl | None:
+        self._add_metrics()
         for entry, name in self.additional_entries.items():
-            if entry in trainer.step_context:
+            if entry in self.parent.step_context:
                 self._write_data(
-                    trainer.global_context.step - 1, name, trainer.step_context[entry]
+                    self.parent.global_context.step - 1,
+                    name, self.parent.step_context[entry]
                 )
 
-    def finalize_epoch(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_epoch(self) -> LoopControl | None:
         # Log epoch-level metrics if any
-        self._add_metrics(trainer)
+        self._add_metrics()
 
-    def finalize_stage(self, trainer: Trainer) -> LoopControl | None:
+    def finalize_stage(self) -> LoopControl | None:
         if hasattr(self, 'wandb_run'):
             self._flush()
             self.wandb_run.finish()
