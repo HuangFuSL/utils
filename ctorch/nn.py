@@ -1139,6 +1139,156 @@ class SinusoidalTemporalEmbedding(Module):
             torch.cos(torch.einsum('...,k->...k', t, self.scale)),
         ], dim=-1).view(*t.shape, self.embedding_dim)
 
+class DDPM(Module, abc.ABC):
+    '''
+    Implements the Denoising Diffusion Probabilistic Models (DDPM) framework proposed in "Denoising Diffusion Probabilistic Models" (https://arxiv.org/abs/2006.11239).
+
+    Args:
+        n_dim (int): The dimension of the input data.
+        n_condition (int): The dimension of the condition vector. Can be 0 for categorical condition.
+        num_steps (int): The number of diffusion steps.
+        betas (torch.Tensor | None): The noise schedule for the diffusion process. If None, a linear schedule from 1e-4 to 2e-2 will be used.
+        tilde_sigma (bool): If True, use :math:`\\tilde\\beta_t` instead of :math:`\\beta_t` for :math:`\\sigma_t`.
+    '''
+    def __init__(
+        self, n_dim: int, n_condition: int,
+        num_steps: int = 1000, betas: torch.Tensor | None = None,
+        tilde_sigma: bool = False
+    ):
+        super().__init__()
+        if n_dim <= 0:
+            raise ValueError('n_dim must be positive.')
+        if n_condition < 0:
+            raise ValueError('n_condition must be a non-negative integer.')
+        if num_steps <= 0:
+            raise ValueError('num_steps must be positive.')
+        if betas is None:
+            betas = torch.linspace(1e-4, 2e-2, num_steps)
+        if not torch.all((betas > 0) & (betas < 1)):
+            raise ValueError('All beta values must be in the range (0, 1).')
+        if betas.shape != (num_steps,):
+            raise ValueError(f'betas must have shape ({num_steps},), but got {betas.shape}.')
+
+        self.n_dim = n_dim
+        self.n_condition = n_condition
+        self.num_steps = num_steps
+        self.tilde_sigma = tilde_sigma
+
+        self.beta: torch.Tensor
+        self.alpha: torch.Tensor
+        self.bar_alpha: torch.Tensor
+
+        self.register_buffer('beta', betas)
+        self.register_buffer('alpha', 1 - betas)
+        self.register_buffer('bar_alpha', torch.cumprod(self.alpha, dim=0))
+
+    @abc.abstractmethod
+    def forward(
+        self, x: torch.Tensor, c: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        '''
+        Predict the noise added to the input tensor at a given step.
+
+        Args:
+            x (torch.Tensor): The input tensor of shape (\\*, D).
+            c (torch.Tensor): The condition tensor of shape (\\*, C) or (\\*) if C = 0.
+            t (torch.Tensor): The diffusion step tensor of shape (\\*).
+
+        Returns:
+            torch.Tensor: The predicted noise tensor of shape (\\*, D).
+        '''
+        pass
+
+    @torch.no_grad()
+    def predict(
+        self, c: torch.Tensor, x_T: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        '''
+        Predict the original input tensor from the noisy tensor at step T.
+
+        Args:
+            c (torch.Tensor): The condition tensor of shape (\\*, C) or (\\*) if C = 0.
+            x_T (torch.Tensor | None): The noised tensor at step T of shape (\\*, D), if provided. If None, it will be initialized as standard Gaussian noise.
+
+        Returns:
+            torch.Tensor: The predicted original tensor of shape (\\*, D).
+        '''
+        if self.n_condition:
+            B = c.shape[:-1]
+        else:
+            B = c.shape
+
+        if x_T is None:
+            x_t = torch.randn(*B, self.n_dim, device=c.device)
+        else:
+            if x_T.shape != (*B, self.n_dim):
+                raise ValueError(f'x_T must have shape ({[*B, self.n_dim]}), but got {x_T.shape}.')
+            x_t = x_T
+
+        for step in reversed(range(self.num_steps)):
+            z = torch.randn_like(x_t) if step > 0 else torch.zeros_like(x_t)
+            t = torch.full(B, step, device=c.device, dtype=torch.long)
+
+            noise = self(x_t, c, t)
+            alpha_t = self.alpha[t].unsqueeze(-1)
+            bar_alpha_t = self.bar_alpha[t].unsqueeze(-1)
+
+            if step == 0:
+                var = torch.zeros_like(bar_alpha_t)
+            else:
+                var = self.beta[t].unsqueeze(-1)
+
+            if self.tilde_sigma:
+                t_1 = torch.clamp(t - 1, min=0)
+                bar_alpha_t_1 = self.bar_alpha[t_1].unsqueeze(-1)
+                var *= (1 - bar_alpha_t_1) / (1 - bar_alpha_t)
+
+            x_next = (x_t - noise * (1 - alpha_t) / torch.sqrt(1 - bar_alpha_t)) / torch.sqrt(alpha_t) + var.sqrt() * z
+            x_t = x_next
+        return x_t
+
+    def predict_noise(
+        self, c: torch.Tensor, x: torch.Tensor,
+        z: torch.Tensor, t: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        '''
+        Predict the noise added to the input tensor.
+
+        Args:
+            c (torch.Tensor): The condition tensor of shape (\\*, C) or (\\*) if C = 0.
+            x (torch.Tensor): The raw input tensor (without noise) of shape (\\*, D).
+            z (torch.Tensor): The noise tensor of shape (\\*, D).
+            t (torch.Tensor | None): The diffusion step tensor of shape (\\*). If None, it will be randomly initialized.
+
+        Returns:
+            torch.Tensor: The predicted noise tensor of shape (\\*, D).
+        '''
+        B = x.shape[:-1]
+        if (self.n_condition and c.shape[:-1] != B) \
+            or (not self.n_condition and c.shape != B):
+            raise ValueError(f'Condition tensor shape {c.shape} is not compatible with input tensor shape {x.shape}.')
+
+        if t is None:
+            t = torch.randint(0, self.num_steps, B, device=x.device)
+        bar_alpha = self.bar_alpha[t].unsqueeze(-1)
+        noisy_x = torch.sqrt(bar_alpha) * x + torch.sqrt(1 - bar_alpha) * z
+        return self(noisy_x, c, t)
+
+    def loss(self, c: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the loss for the diffusion process. Override to implement different loss functions.
+
+        Args:
+            c (torch.Tensor): The condition tensor of shape (\\*, C) or (\\*) if C = 0.
+            x (torch.Tensor): The input tensor of shape (\\*, D).
+
+        Returns:
+            torch.Tensor: The loss tensor of shape (\\*).
+        '''
+        z = torch.randn_like(x)
+        return torch.nn.functional.mse_loss(
+            self.predict_noise(c, x, z), z, reduction='none'
+        ).mean(dim=-1)
 
 class DeEmbedding(Module):
     def __init__(self, embedding: torch.nn.Embedding):
