@@ -734,7 +734,7 @@ class WandBHook(BaseHook):
         self.project = project
         self.entity = entity
         self.run_name = run_name
-        self.config = config
+        self.config = config or {}
         self.flush_interval = flush_interval
         self.loss_keys = loss_keys or []
         self.optimizer_keys = optimizer_keys or []
@@ -749,7 +749,8 @@ class WandBHook(BaseHook):
     def before_stage(self) -> LoopControl | None:
         self.wandb_run = self.wandb.init(
             project=self.project, entity=self.entity,
-            name=self.run_name, config=self.config
+            name=self.run_name,
+            config=self.config | self.parent.global_context.hyperparams
         )
 
     def _write_data(self, step: int, key: str, value: Any):
