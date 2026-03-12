@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import dataclasses
 import logging
 import multiprocessing as mp
@@ -26,23 +27,25 @@ if __name__ != '__main__':
 
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Run multiple instances of a Jupyter notebook in parallel.')
-    parser.add_argument('-f', '--notebook', type=str, help='Path to the notebook template.')
-    parser.add_argument('-t', '--tasks', type=int, help='Total number of notebook instances to run.')
-    parser.add_argument('-w', '--workers', type=int, help='Maximum number of parallel workers.')
+    parser.add_argument('-f', '--notebook', type=str, help='Path to the notebook template.', required=True)
+    parser.add_argument('-t', '--tasks', type=int, help='Total number of notebook instances to run.', default=1)
+    parser.add_argument('-w', '--workers', type=int, help='Maximum number of parallel workers. Defaults to 1.', default=1)
     parser.add_argument('--cwd', type=str, default=None, help='Working directory for notebook execution. Defaults to the notebook template directory.')
     parser.add_argument('-i', '--interval', type=float, default=20.0, help='Minimum interval (in seconds) between starting new notebook instances.')
     parser.add_argument('--timeout', type=int, default=None, help='Execution timeout for each notebook instance (in seconds).')
     parser.add_argument('--log-level', type=str, default='INFO', help='Logging level.')
-    parser.add_argument('--raise-on-error', action='store_false', help='Whether to raise exceptions on notebook execution errors. By default, it will raise. Use this flag to ignore errors and continue execution.')
+    parser.add_argument('--raise-on-error', dest='raise_on_error', action='store_true', help='Raise exceptions on notebook instance execution errors. Does not affect the main loop. (default)')
+    parser.add_argument('--ignore-errors', dest='raise_on_error', action='store_false', help='Ignore notebook execution errors and continue execution of that instance. Does not affect the main loop.')
+    parser.set_defaults(raise_on_error=True)
     return parser
 
 @dataclasses.dataclass
 class Config():
-    notebook_template_name: str = 'test.ipynb'
+    notebook_template_name: str
     execution_cwd: str | None = None
 
-    task_count: int = 2
-    num_workers: int = 4
+    task_count: int = 1
+    num_workers: int = 1
     task_interval: float = 20.0
 
     execution_timeout: int | None = None
@@ -291,7 +294,7 @@ class MainExecutor():
             unfinished_tasks = [
                 _.task for _ in self.alive_clients if _.task is not None
             ]
-            # Frequency control:
+            # Frequency control: at least wait 1s to avoid busy loop
             if len(unfinished_tasks) < self.config.num_workers:
                 sleep = asyncio.create_task(asyncio.sleep(max(1,
                     self.config.task_interval -
@@ -342,5 +345,12 @@ if __name__ == '__main__':
             'This script is not supported on Windows due to limitations in process management.'
         )
     config = Config.from_cli()
+    tempfile_path = config.script_dir / f'.{config.notebook_template_path.stem}_run_nb.lock'
+    if tempfile_path.exists():
+        raise RuntimeError(f'A same instance is already running.')
+    else:
+        tempfile_path.touch()
+    atexit.register(lambda: tempfile_path.unlink(missing_ok=True))
+
     executor = MainExecutor(config)
     asyncio.run(executor.run())
