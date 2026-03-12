@@ -13,6 +13,7 @@ import shutil
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Dict, List
 
@@ -130,13 +131,28 @@ class AsyncNotebookExecutor():
     index: int
     notebook_path: Path
     config: Config
+    env: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     task: asyncio.Task[None] | None = dataclasses.field(init=False, default=None)
+
+    def inject_env(self, nb: nbformat.NotebookNode):
+        injected_cell = nbformat.v4.new_code_cell(
+            source=('\n'.join([
+                '# This cell is automatically injected to set up environment variables.',
+                'import os',
+                *[f"os.environ[{k!r}] = {v!r}" for k, v in self.env.items()]
+            ])),
+            metadata={
+                'tags': ['run-nb-injected-env'],
+            },
+        )
+        nb.cells.insert(0, injected_cell)
 
     async def execute_notebook(self):
         nb_path = self.notebook_path
         with nb_path.open('r', encoding='utf-8') as f:
             nb = nbformat.read(f, as_version=4)
+        self.inject_env(nb)
 
         def on_notebook_start(notebook):
             logging.info(f'Worker {self.index}: kernel started for {nb_path.name}')
@@ -245,6 +261,10 @@ class MainExecutor():
             index=index,
             notebook_path=notebook_path,
             config=self.config,
+            env={
+                'automated': '1',
+                'uuid': str(uuid.uuid4()),
+            }
         )
         self.clients[index] = client
         client.start()
