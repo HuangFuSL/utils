@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ subject }}</title>
+    <meta name="color-scheme" content="light" />
+    <style>
+      /* --- GitHub Light inspired palette --- */
+      :root {
+        --bg: #ffffff;
+        --bg-muted: #f6f8fa;
+        --border-subtle: #d0d7de;
+        --text-primary: #24292f;
+        --text-muted: #57606a;
+        --text-accent: #0969da;
+
+        /* Level colors (used as main bubble background) */
+        --level-debug: #4b5563;     /* 深灰 */
+        --level-info: #16a34a;      /* 草绿 */
+        --level-warning: #b45309;   /* 稍暗橙黄 */
+        --level-error: #dc2626;     /* 红 */
+        --level-critical: #b91c1c;  /* 更深的红，用于 critical */
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background-color: #f5f7fb;
+        color: #1f2937;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                     Helvetica, Arial, sans-serif, "Apple Color Emoji",
+                     "Segoe UI Emoji";
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .container {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .card {
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 20px 22px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        margin-bottom: 16px;
+      }
+
+      .header {
+        margin-bottom: 12px;
+      }
+
+      .title {
+        font-size: 20px;
+        font-weight: 800;
+        margin: 0 0 4px 0;
+      }
+
+      .meta {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 0;
+      }
+
+      .records {
+        margin-top: 8px;
+      }
+
+      .record {
+        padding: 0;
+        margin-bottom: 16px;
+      }
+
+      .record:last-child {
+        margin-bottom: 0;
+      }
+
+      .record-header {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid transparent;
+        text-transform: uppercase;
+        color: #ffffff;
+      }
+
+      .level-debug {
+        /* 深灰 */
+        background-color: #4b5563;
+        border-color: #111827;
+      }
+
+      .level-info {
+        /* 草绿 */
+        background-color: #16a34a;
+        border-color: #14532d;
+      }
+
+      .level-warning {
+        /* 稍暗橙黄 */
+        background-color: #b45309;
+        border-color: #7c2d12;
+      }
+
+      .level-error {
+        /* 红 */
+        background-color: #dc2626;
+        border-color: #991b1b;
+      }
+
+      .level-critical {
+        /* 更深红（critical） */
+        background-color: #b91c1c;
+        border-color: #7f1d1d;
+      }
+
+      .logger-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+
+      .meta-table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+
+      .meta-table th,
+      .meta-table td {
+        padding: 4px 0;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      .meta-table th {
+        padding-right: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .location {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+        max-width: 100%;
+        white-space: normal;
+        word-break: break-all;
+      }
+
+      .section-title {
+        font-weight: 700;
+        margin: 12px 0 8px 0;
+      }
+
+      .message {
+        margin-top: 4px;
+        margin-bottom: 4px;
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px 14px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        line-height: 1.5;
+      }
+
+      .summary-pill {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-right: 4px;
+        color: #ffffff;
+        border: 1px solid transparent;
+      }
+
+      .summary-warning {
+        background-color: #b45309;
+        border-color: #7c2d12;
+      }
+
+      .summary-error {
+        background-color: #dc2626;
+        border-color: #991b1b;
+      }
+
+      .summary-debug,
+      .summary-info {
+        background-color: #16a34a;
+        border-color: #14532d;
+      }
+
+      .summary-lineno {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-left: 4px;
+      }
+
+      .summary-item {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .exception {
+        margin-top: 4px;
+        border-radius: 10px;
+        background-color: #111827;
+        color: #f9fafb;
+        padding: 14px 16px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      pre.exc {
+        margin: 0;
+        font-family: inherit;
+        font-size: inherit;
+        line-height: inherit;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <div class="header">
+          <p class="title">
+            {{ subject }}
+            {% if mode == "digest" %}
+              ({{ total_raw_records }} records)
+            {% elif mode == "immediate" %}
+              [{{ main_record.levelname }}]
+            {% endif %}
+          </p>
+          <p class="meta">
+            Mode: {{ mode }}
+            · Total records: {{ total_raw_records }}
+          </p>
+        </div>
+
+        <div class="records">
+          {%- set level_class = (
+            "level-critical" if main_record.levelno >= 50 else
+            "level-error" if main_record.levelno >= 40 else
+            "level-warning" if main_record.levelno >= 30 else
+            "level-info" if main_record.levelno >= 20 else
+            "level-debug"
+          ) -%}
+          <div class="record">
+            <div class="record-header">
+              <span class="badge {{ level_class }}">{{ main_record.levelname }}</span>
+              <span class="logger-name" title="{{ main_record.logger_name }}">
+                {{ main_record.logger_name }}
+              </span>
+            </div>
+
+            <table class="meta-table">
+              <tr>
+                <th>Time</th>
+                <td>{{ main_record.created }}</td>
+              </tr>
+              <tr>
+                <th>Logger</th>
+                <td>{{ main_record.logger_name }}</td>
+              </tr>
+              <tr>
+                <th>Level</th>
+                <td>{{ main_record.levelname }}</td>
+              </tr>
+              <tr>
+                <th>File</th>
+                <td>
+                  <div class="location" title="{{ main_record.pathname }}:{{ main_record.lineno }}">
+                    {{ main_record.pathname }}:{{ main_record.lineno }}
+                  </div>
+                </td>
+              </tr>
+            </table>
+
+            <div class="section-title">Message</div>
+            <div class="message">
+              {{ main_record.message }}
+            </div>
+
+            {% if mode == "digest" and main_record.count > 1 %}
+              <p style="margin: 4px 0 0 0; font-size: 12px; color: var(--text-muted);">
+                ({{ main_record.count - 1 }} same log{% if main_record.count > 2 %}s{% endif %} collapsed)
+              </p>
+            {% endif %}
+
+            {% if main_record.exc %}
+              <div class="section-title" style="color:#991b1b;">Traceback</div>
+              <div class="exception">
+                <pre class="exc">{{ main_record.exc }}</pre>
+              </div>
+            {% endif %}
+
+            {% if remaining_records %}
+              <div class="section-title">Other Records</div>
+              <div class="message">
+                {% for s in remaining_records %}
+                  {%- set cls = (
+                    "summary-error" if s.levelno >= 40 else
+                    "summary-warning" if s.levelno >= 30 else
+                    "summary-info" if s.levelno >= 20 else
+                    "summary-debug"
+                  ) -%}
+                  <div class="summary-item">
+                    <span class="summary-pill {{ cls }}">
+                      {{ s.count }} {{ s.levelname|lower }}{% if s.count > 1 %}s{% endif %}
+                    </span>
+                    {% if s.lineno is not none %}
+                      <span class="summary-lineno">
+                        {{ s.pathname }}:{{ s.lineno }}
+                      </span>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
+

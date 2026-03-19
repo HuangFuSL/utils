@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ subject }}</title>
+    <meta name="color-scheme" content="light" />
+    <style>
+      /* --- GitHub Light inspired palette --- */
+      :root {
+        --bg: #ffffff;
+        --bg-muted: #f6f8fa;
+        --border-subtle: #d0d7de;
+        --text-primary: #24292f;
+        --text-muted: #57606a;
+        --text-accent: #0969da;
+
+        --level-debug: #4b5563;
+        --level-info: #16a34a;
+        --level-warning: #b45309;
+        --level-error: #dc2626;
+        --level-critical: #b91c1c;
+
+        --code-bg: #111827;
+        --code-fg: #f9fafb;
+        --code-muted: #9ca3af;
+
+        --code-highlight-error-bg: rgba(220, 38, 38, 0.18);
+        --code-highlight-error-border: #f87171;
+
+        --code-highlight-warning-bg: rgba(180, 83, 9, 0.20);
+        --code-highlight-warning-border: #f59e0b;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background-color: #f5f7fb;
+        color: #1f2937;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                     Helvetica, Arial, sans-serif, "Apple Color Emoji",
+                     "Segoe UI Emoji";
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .container {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .card {
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 20px 22px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        margin-bottom: 16px;
+      }
+
+      .header {
+        margin-bottom: 12px;
+      }
+
+      .title {
+        font-size: 20px;
+        font-weight: 800;
+        margin: 0 0 4px 0;
+      }
+
+      .meta {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 0;
+      }
+
+      .status-row {
+        margin-top: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid transparent;
+        text-transform: none;
+        color: #ffffff;
+        height: 22px;
+        line-height: 22px;
+      }
+
+      .level-debug {
+        background-color: #4b5563;
+        border-color: #111827;
+      }
+
+      .level-info {
+        background-color: #16a34a;
+        border-color: #14532d;
+      }
+
+      .level-warning {
+        background-color: #b45309;
+        border-color: #7c2d12;
+      }
+
+      .level-error {
+        background-color: #dc2626;
+        border-color: #991b1b;
+      }
+
+      .level-critical {
+        background-color: #b91c1c;
+        border-color: #7f1d1d;
+      }
+
+      .meta-table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+
+      .meta-table th,
+      .meta-table td {
+        padding: 4px 0;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      .meta-table th {
+        padding-right: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        text-align: right;
+        color: var(--text-muted);
+      }
+
+      .location {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+        font-size: 11px;
+        color: var(--text-muted);
+        max-width: 100%;
+        white-space: normal;
+        word-break: break-all;
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                     "Liberation Mono", "Courier New", monospace;
+      }
+
+      .section-title {
+        font-weight: 700;
+        margin: 12px 0 8px 0;
+      }
+
+      .message {
+        margin-top: 4px;
+        margin-bottom: 4px;
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px 14px;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        line-height: 1.5;
+      }
+
+      .pill-list {
+        margin-top: 6px;
+      }
+
+      .info-pill {
+        display: inline-block;
+        margin: 0 6px 6px 0;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #374151;
+        background-color: #f3f4f6;
+        border: 1px solid #d1d5db;
+      }
+
+      .exception {
+        margin-top: 4px;
+        border-radius: 10px;
+        background-color: #111827;
+        color: #f9fafb;
+        padding: 14px 16px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    "Liberation Mono", "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        border: 1px solid #1f2937;
+      }
+
+      pre.exc {
+        margin: 0;
+        padding: 0;
+        background-color: #111827;
+        color: #f9fafb;
+        font-family: inherit;
+        font-size: inherit;
+        line-height: inherit;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .code-snippet {
+        margin-top: 4px;
+        border-radius: 10px;
+        background-color: #111827;
+        color: #f9fafb;
+        border: 1px solid #1f2937;
+        overflow: hidden;
+      }
+
+      .code-table {
+        width: 100%;
+        border-collapse: collapse;
+        border-spacing: 0;
+        table-layout: fixed;
+        background-color: #111827;
+        color: #f9fafb;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    "Liberation Mono", "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.25;
+      }
+
+      .code-table tr {
+        margin: 0;
+        background-color: #111827;
+      }
+
+      .code-table td {
+        margin: 0;
+        vertical-align: top;
+        background-color: #111827;
+        color: #f9fafb;
+      }
+
+      .code-line-number {
+        width: 56px;
+        color: #9ca3af;
+        text-align: right;
+        padding: 2px 10px 2px 8px;
+        white-space: nowrap;
+        box-sizing: border-box;
+        border-right: 1px solid #c9c9c9;
+      }
+
+      .code-line-text {
+        padding: 2px 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        box-sizing: border-box;
+      }
+
+      .code-line-pre {
+        margin: 0;
+        font-family: inherit;
+        font-size: inherit;
+        line-height: inherit;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      tr.error-line {
+        background-color: var(--code-highlight-error-bg);
+      }
+
+      tr.error-line .code-line-number {
+        color: #fecaca;
+        font-weight: 700;
+        border-right: 1px solid #f87171;
+      }
+
+      tr.error-line .code-line-text {
+        color: #fecaca;
+        font-weight: 700;
+        border-left: 3px solid var(--code-highlight-error-border);
+        padding-left: 9px;
+      }
+
+      tr.warning-line {
+        background-color: var(--code-highlight-warning-bg);
+      }
+
+      tr.warning-line .code-line-number {
+        color: #fde68a;
+        font-weight: 700;
+        border-right: 1px solid #f59e0b;
+      }
+
+      tr.warning-line .code-line-text {
+        color: #fde68a;
+        font-weight: 700;
+        border-left: 3px solid var(--code-highlight-warning-border);
+        padding-left: 9px;
+      }
+    </style>
+  </head>
+  <body>
+    {% macro render_exception_card(exc, tone, index, label, single) %}
+      {% set badge_class = "level-error" if tone == "error" else "level-warning" %}
+      {% set line_class = "error-line" if tone == "error" else "warning-line" %}
+      {% set traceback_title_color = "#991b1b" if tone == "error" else "#92400e" %}
+
+      <div class="card">
+        <div class="header">
+          <p class="title" style="font-size: 18px; margin-bottom: 6px;">
+            {{ label }} {% if not single %}#{{ index }}{% endif %}
+          </p>
+          <p class="meta">
+            Captured after {{ exc.wall_time }} of execution{% if exc.exc_time %} (at {{ exc.exc_time }}){% endif %}
+            {% if exc.thread_name %}
+              · Thread {{ exc.thread_name }}
+            {% endif %}
+          </p>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <span class="badge {{ badge_class }}">{{ exc.exc_type }}</span>
+        </div>
+
+        <table class="meta-table">
+          <tr>
+            <th>Exception</th>
+            <td>{{ exc.exc_type }}</td>
+          </tr>
+          <tr>
+            <th>Message</th>
+            <td>{{ exc.exc_message or "-" }}</td>
+          </tr>
+          <tr>
+            <th>File</th>
+            <td>
+              <div class="location" title="{{ exc.filename }}:{{ exc.lineno }}">
+                {{ exc.filename }}:{{ exc.lineno }}
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <th>Function</th>
+            <td class="mono">{{ exc.func_name or "-" }}</td>
+          </tr>
+          {% if exc.thread_name or exc.thread_id %}
+            <tr>
+              <th>Thread</th>
+              <td>
+                {% if exc.thread_name %}{{ exc.thread_name }}{% else %}-{% endif %}
+                {% if exc.thread_id is not none %} (id={{ exc.thread_id }}){% endif %}
+              </td>
+            </tr>
+          {% endif %}
+        </table>
+
+        {% if exc.code_context %}
+          <div class="section-title">Code Context from {{ exc.filename }}</div>
+          <div class="code-snippet">
+            <table class="code-table" cellspacing="0" cellpadding="0" border="0">
+              <tbody>
+                {% set start_lineno = (exc.lineno or 1) - exc.error_line_index %}
+                {% for line in exc.code_context %}
+                  <tr class="{% if loop.index0 == exc.error_line_index %}{{ line_class }}{% endif %}">
+                    <td class="code-line-number">{{ start_lineno + loop.index0 }}</td>
+                    <td class="code-line-text">
+                      <pre class="code-line-pre">{{ line }}</pre>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+
+        {% if exc.traceback_text %}
+          <div class="section-title" style="color: {{ traceback_title_color }};">Traceback</div>
+          <div class="exception">
+            <pre class="exc">{{ exc.traceback_text }}</pre>
+          </div>
+        {% endif %}
+      </div>
+    {% endmacro %}
+
+    <div class="container">
+      {%- set has_main_exception = (exception_info|length) > 0 -%}
+      {%- set has_thread_exception = (thread_exception_info|length) > 0 -%}
+
+      {%- if has_main_exception -%}
+        {%- set status_class = "level-error" -%}
+        {%- set status_text = "ABNORMAL EXIT" -%}
+        {%- set reason_text = "Unhandled exception detected in the main thread." -%}
+      {%- elif has_thread_exception -%}
+        {%- set status_class = "level-warning" -%}
+        {%- set status_text = "EXIT WITH THREAD EXCEPTIONS" -%}
+        {%- set reason_text = "Program exited, but background thread exceptions were captured." -%}
+      {%- else -%}
+        {%- set status_class = "level-info" -%}
+        {%- set status_text = "NORMAL EXIT" -%}
+        {%- set reason_text = "Program exited and no unhandled exception was captured." -%}
+      {%- endif -%}
+
+      <div class="card">
+        <div class="header">
+          <p class="title" style="font-size: 18px; margin-bottom: 6px;">
+            Status
+          </p>
+          <div class="status-row">
+            <span class="badge {{ status_class }}">{{ status_text }}</span>
+          </div>
+        </div>
+
+        <table class="meta-table">
+          <tr>
+            <th>Python Executable</th>
+            <td>
+              <div class="location mono">{{ process_info.executable }}</div>
+            </td>
+          </tr>
+          <tr>
+            <th>Python Version</th>
+            <td>{{ process_info.version }}</td>
+          </tr>
+          <tr>
+            <th>Command Line</th>
+            <td>
+              <div class="location mono">{{ process_info.argv | join(" ") }}</div>
+            </td>
+          </tr>
+          <tr>
+            <th>Working Dir</th>
+            <td>
+              <div class="location mono" title="{{ process_info.cwd }}">
+                {{ process_info.cwd }}
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <th>Entry File</th>
+            <td>
+              <div class="location mono">{{ process_info.entry_filename }}</div>
+            </td>
+          </tr>
+          <tr>
+            <th>Duration</th>
+            <td>{{ time_info.wall_time if time_info else "-" }}</td>
+          </tr>
+          <tr>
+            <th>File Path</th>
+            <td>
+              <div class="location mono" title="{{ process_info.entry_path }}">
+                {{ process_info.entry_path }}
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <th>Exit Time</th>
+            <td>{{ time_info.current_time if time_info else "-" }}</td>
+          </tr>
+          <tr>
+            <th>Reason</th>
+            <td>{{ reason_text }}</td>
+          </tr>
+        </table>
+
+        <div class="section-title">Process Info</div>
+        <div class="pill-list">
+          <span class="info-pill">PID {{ process_info.pid }}</span>
+          {% if process_info.ppid is not none %}
+            <span class="info-pill">PPID {{ process_info.ppid }}</span>
+          {% endif %}
+          <span class="info-pill">HOST {{ process_info.hostname }}</span>
+        </div>
+      </div>
+
+      {% for exc in exception_info %}
+        {{ render_exception_card(exc, "error", loop.index, "Detected Exception", exception_info|length == 1) }}
+      {% endfor %}
+
+      {% for exc in thread_exception_info %}
+        {{ render_exception_card(exc, "warning", loop.index, "Detected Thread Exception", thread_exception_info|length == 1) }}
+      {% endfor %}
+    </div>
+  </body>
+</html>
