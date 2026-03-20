@@ -4,9 +4,11 @@ import datetime
 import functools
 import linecache
 import os
+import site
 import smtplib
 import socket
 import sys
+import sysconfig
 import threading
 import traceback
 from email.message import EmailMessage
@@ -132,9 +134,42 @@ class GlobalInfo():
             self.time_info = TimeInfo.make()
             return dataclasses.asdict(self)
 
-def _get_tb_context(tb: TracebackType) -> Tuple[List[str], int]:
-    while tb.tb_next is not None:
-        tb = tb.tb_next
+def _is_under(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+def _is_lib_code(filename: str) -> bool:
+    try:
+        file_path = Path(filename).expanduser().resolve()
+    except Exception:
+        return False
+    stdlib_path = Path(sysconfig.get_paths()['stdlib'])
+    if _is_under(file_path, stdlib_path):
+        return True
+    for site_path in [
+        *site.getsitepackages(),
+        site.getusersitepackages(),
+    ]:
+        try:
+            site_path_obj = Path(site_path).expanduser().resolve()
+        except Exception:
+            continue
+        if _is_under(file_path, site_path_obj):
+            return True
+    return False
+
+
+def _get_tb_context(tb: TracebackType) -> Tuple[List[str], int, int]:
+    tb_prev = tb
+    while tb is not None:
+        tb_prev = tb
+        tb = tb.tb_next # type: ignore
+        if _is_lib_code(tb.tb_frame.f_code.co_filename):
+            break
+    tb = tb_prev
 
     context_lines = 5
 
@@ -147,15 +182,15 @@ def _get_tb_context(tb: TracebackType) -> Tuple[List[str], int]:
     if not lines:
         summary = traceback.extract_tb(tb, limit=1)[-1]
         if summary.line:
-            return [summary.line], 0
-        return [], 0
+            return [summary.line], 0, 0
+        return [], 0, 0
 
     start = max(1, lineno - context_lines)
     end = min(len(lines), lineno + context_lines)
 
     snippet = [line.rstrip('\n') for line in lines[start - 1:end]]
     error_line_index = lineno - start
-    return snippet, error_line_index
+    return snippet, lineno, error_line_index
 
 @dataclasses.dataclass(slots=True)
 class ProcessInfo():
@@ -223,6 +258,7 @@ class ExceptionInfo():
     func_name: str | None
 
     code_context: List[str]
+    error_lineno: int
     error_line_index: int
     thread_name: str | None = None
     thread_id: int | None = None
@@ -246,7 +282,7 @@ class ExceptionInfo():
             filename = last_frame.filename
             lineno = last_frame.lineno
             func_name = last_frame.name
-            code_context, error_line_index = _get_tb_context(
+            code_context, error_lineno, error_line_index = _get_tb_context(
                 exc_traceback
             )
         else:
@@ -254,6 +290,7 @@ class ExceptionInfo():
             lineno = 0
             func_name = None
             code_context = []
+            error_lineno = 0
             error_line_index = 0
 
         ret = ExceptionInfo(
@@ -265,6 +302,7 @@ class ExceptionInfo():
             lineno=lineno,
             func_name=func_name,
             code_context=code_context,
+            error_lineno=error_lineno,
             error_line_index=error_line_index,
             thread_name=thread.name if thread else None,
             thread_id=thread.ident if thread else None

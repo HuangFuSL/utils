@@ -365,11 +365,11 @@
         </table>
 
         {% if exc.code_context %}
-          <div class="section-title">Code Context from {{ exc.filename }}</div>
+          <div class="section-title">Code Context</div>
           <div class="code-snippet">
             <table class="code-table" cellspacing="0" cellpadding="0" border="0">
               <tbody>
-                {% set start_lineno = (exc.lineno or 1) - exc.error_line_index %}
+                {% set start_lineno = (exc.error_lineno or 1) - exc.error_line_index %}
                 {% for line in exc.code_context %}
                   <tr class="{% if loop.index0 == exc.error_line_index %}{{ line_class }}{% endif %}">
                     <td class="code-line-number">{{ start_lineno + loop.index0 }}</td>
