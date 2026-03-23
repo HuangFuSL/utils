@@ -294,6 +294,11 @@ def _auto_call(fn: Callable, batch: Any) -> Any:
 
 class _NestedLoopCore(BaseHook):
     ''' General core hook for training/evaluation loops. '''
+
+    def __init__(self):
+        super().__init__()
+        self._track_hp = False  # Disable hyperparam tracking for core hooks
+
     def before_stage(self) -> LoopControl | None:
         self.parent.model # Raise DeferHookExec if model is not initialized
         self.parent.model.to(self.parent.device)
@@ -336,6 +341,12 @@ class _NestedLoopCore(BaseHook):
 
 class _TrainerCore(BaseHook):
     ''' Core hook for training loops. '''
+
+    def __init__(self):
+        super().__init__()
+        self._track_hp = False  # Disable hyperparam tracking for core hooks
+
+
     def before_step(self) -> HookReturn:
         self.parent.model.train()
 
@@ -382,6 +393,11 @@ class _TrainerCore(BaseHook):
 
 class _EvaluatorCore(BaseHook):
     ''' Core hook for evaluation loops. '''
+
+    def __init__(self):
+        super().__init__()
+        self._track_hp = False  # Disable hyperparam tracking for core hooks
+
     def check_epoch(self) -> LoopControl | None:
         self.parent._epoch_context = EpochContext()
 
