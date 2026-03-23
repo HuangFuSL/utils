@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 '''
 run_nb.py - Script to execute multiple instances of a Jupyter notebook in parallel with controlled frequency and resource management.
 '''
@@ -115,7 +116,7 @@ class Config():
         if path.is_absolute():
             return path.resolve()
         else:
-            return (self.script_dir / path).resolve()
+            return (Path.cwd() / path).resolve()
 
     @property
     def cwd(self) -> Path:
@@ -124,9 +125,9 @@ class Config():
             if path.is_absolute():
                 return path.resolve()
             else:
-                return (self.script_dir / path).resolve()
+                return (Path.cwd() / path).resolve()
         else:
-            return self.notebook_template_path.parent.resolve()
+            return self.notebook_template_path.parent
 
 
 @dataclasses.dataclass
