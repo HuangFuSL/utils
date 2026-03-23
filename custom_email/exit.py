@@ -167,7 +167,7 @@ def _get_tb_context(tb: TracebackType) -> Tuple[List[str], int, int]:
     while tb is not None:
         tb_prev = tb
         tb = tb.tb_next # type: ignore
-        if _is_lib_code(tb.tb_frame.f_code.co_filename):
+        if tb is None or _is_lib_code(tb.tb_frame.f_code.co_filename):
             break
     tb = tb_prev
 
@@ -293,8 +293,14 @@ class ExceptionInfo():
             error_lineno = 0
             error_line_index = 0
 
+        if not exc_type:
+            exc_type_name = '<unknown>'
+        elif exc_type.__module__ == 'builtins':
+            exc_type_name = exc_type.__name__
+        else:
+            exc_type_name = f'{exc_type.__module__}.{exc_type.__name__}'
         ret = ExceptionInfo(
-            exc_type=exc_type.__name__ if exc_type else '<unknown>',
+            exc_type=exc_type_name,
             exc_message=str(exc_value) if exc_value else '',
             traceback_text=''.join(traceback.format_exception(
                 exc_type, exc_value, exc_traceback)),
