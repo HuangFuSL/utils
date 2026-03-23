@@ -2,6 +2,8 @@
 `utils.trainer.hooks` - Trainer hooks for various training functionalities.
 '''
 
+import cProfile
+import pstats
 from typing import Any, Dict, List, Literal, Sequence
 import numpy as np
 import torch
@@ -9,11 +11,19 @@ import os
 import traceback
 import shutil
 import warnings
+import profile
 
-from torch.profiler import profile
+from torch.profiler import profile as torch_profile
 
 from . import BaseHook, DeferHookExec, LoopControl, Evaluator
 from ..ctorch.device import get_best_device
+
+class FillHyperParamHook(BaseHook):
+    def __init__(self, **hyperparams: Any):
+        self.hyperparams = hyperparams
+
+    def before_stage(self) -> LoopControl | None:
+        self.parent.global_context.hyperparams.update(self.hyperparams)
 
 class OptunaHook(BaseHook):
     def __init__(
@@ -330,7 +340,44 @@ class WeightedLossHook(BaseHook):
         assert losses is not None
         self.parent.step_context['loss'] = (losses @ weights).mean()
 
-class ProfileHook(BaseHook):
+
+class PythonProfileHook(BaseHook):
+    '''
+    Hook to profile each training step using cProfile
+    '''
+    def __init__(
+        self, num_steps: int | None = None,
+        export_path: str | None = None, write_to: str = 'python_profile',
+        kernel: Literal['c', 'python'] = 'c'
+    ):
+        self.num_steps = num_steps
+        self.export_path = export_path
+        self.write_to = write_to
+        self.kernel = kernel
+
+
+    def before_stage(self) -> LoopControl | None:
+        if self.kernel == 'c':
+            self.parent.global_context[self.write_to] = cProfile.Profile()
+        else:
+            self.parent.global_context[self.write_to] = profile.Profile()
+        self.parent.global_context[self.write_to].enable()
+
+    def check_step(self) -> LoopControl | None:
+        if self.num_steps is not None and \
+            self.parent.global_context.step >= self.num_steps:
+            return LoopControl.SKIP_STAGE
+
+    def finalize_stage(self) -> LoopControl | None:
+        self.parent.global_context[self.write_to].disable()
+        if self.export_path is not None:
+            if not os.path.exists(self.export_path):
+                os.makedirs(self.export_path)
+            with open(f"{self.export_path}/profile.txt", 'w') as f:
+                ps = pstats.Stats(self.parent.global_context[self.write_to], stream=f)
+                ps.strip_dirs().sort_stats('tottime').print_stats()
+
+class TorchProfileHook(BaseHook):
     '''
     Hook to profile each training step using torch.profiler.
 
@@ -341,35 +388,40 @@ class ProfileHook(BaseHook):
     '''
 
     def __init__(
-        self, num_steps: int, export_path: str | None = None,
+        self, num_steps: int | None = None, export_path: str | None = None,
+        write_to: str = 'torch_profile',
         **kwargs
     ):
         self.num_steps = num_steps
         self.export_path = export_path
+        self.write_to = write_to
         self.prof_kwargs = kwargs
 
     def before_stage(self) -> LoopControl | None:
-        self.parent.global_context['profile'] = profile(
+        self.parent.global_context[self.write_to] = torch_profile(
             experimental_config=torch._C._profiler._ExperimentalConfig(
                 verbose=True),
             **self.prof_kwargs
         )
-        self.parent.global_context['profile'].__enter__()
+        self.parent.global_context[self.write_to].__enter__()
 
     def check_step(self) -> LoopControl | None:
-        if self.parent.global_context.step >= self.num_steps:
+        if self.num_steps is not None and \
+            self.parent.global_context.step >= self.num_steps:
             return LoopControl.SKIP_STAGE
 
     def finalize_step(self) -> LoopControl | None:
-        self.parent.global_context['profile'].step()
+        self.parent.global_context[self.write_to].step()
 
     def finalize_stage(self) -> LoopControl | None:
         exc = self.parent.exception
         exc_type = None if exc is None else type(exc)
         tb = None if exc is None else exc.__traceback__
-        self.parent.global_context['profile'].__exit__(exc_type, exc, tb)
+        self.parent.global_context[self.write_to].__exit__(exc_type, exc, tb)
         if self.export_path is not None:
-            self.parent.global_context['profile'].export_chrome_trace(f"{self.export_path}/trace.json")
+            self.parent.global_context[self.write_to].export_chrome_trace(
+                f"{self.export_path}/trace.json"
+            )
 
 class LoadCheckpointHook(BaseHook):
     '''
@@ -611,6 +663,7 @@ class EvaluateHook(BaseHook):
         self.eval_interval_step = eval_interval_step
         self.eval_interval_epoch = eval_interval_epoch
         self.copy = copy
+        self.hyperparams_copied = False
 
     def _eval(self) -> None:
         if self.copy:
@@ -618,6 +671,11 @@ class EvaluateHook(BaseHook):
         else:
             self.evaluator.model_context.device = self.parent.device
             self.evaluator.model_context.model = self.parent.model
+        if not self.hyperparams_copied:
+            self.evaluator.global_context.hyperparams.update(
+                self.parent.global_context.hyperparams
+            )
+            self.hyperparams_copied = True
         self.evaluator.evaluate()
         new_metrics = self.evaluator.get_metrics().copy()
         if self.parent.global_context.metrics:
