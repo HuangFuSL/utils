@@ -31,6 +31,29 @@ class GradientReversalLayer(Module):
         return local_F.gradient_reversal(x, self.alpha)
 
 
+class FuncWrapper(Module):
+    '''
+    A module that wraps an arbitrary function.
+
+    Args:
+        func (Callable): The function to wrap. It should take a torch.Tensor as input and return a torch.Tensor as output.
+    '''
+    def __init__(self, func: Callable[[torch.Tensor], torch.Tensor]):
+        super().__init__()
+        if not callable(func):
+            raise TypeError('func must be callable.')
+        self.func = func
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Forward pass for the function wrapper.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+        '''
+        return self.func(x)
+
+
 class Activation(Module):
     '''
     Arbitrary activation function module.

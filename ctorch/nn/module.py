@@ -26,6 +26,39 @@ class Module(torch.nn.Module):
             if isinstance(module, Module):
                 module.debug()
 
+    def _check_non_negative(self, *args: torch.Tensor):
+        '''
+        Check that the given tensors contain only non-negative values.
+
+        Args:
+            *args (torch.Tensor): Tensors to check.
+        '''
+        if not self._debug:
+            return
+        for i, tensor in enumerate(args, start=1):
+            self._check_tensor(
+                tensor, check_nan=True, check_inf=True, check_extreme_value=None
+            )
+            if (tensor < 0).any().item():
+                raise ValueError(f'Negative values detected in tensor #{i}.')
+
+    def _check_zero_to_one(self, *args: torch.Tensor):
+        '''
+        Check that the given tensors contain only values in the range [0, 1].
+
+        Args:
+            *args (torch.Tensor): Tensors to check.
+        '''
+        if not self._debug:
+            return
+        for i, tensor in enumerate(args, start=1):
+            self._check_tensor(
+                tensor, check_nan=True, check_inf=True, check_extreme_value=None
+            )
+            self._check_non_negative(tensor)
+            if (tensor > 1).any().item():
+                raise ValueError(f'Values outside [0, 1] detected in tensor #{i}.')
+
     def _check_tensor(
         self, *args: torch.Tensor,
         check_nan: bool = True, check_inf: bool = True,

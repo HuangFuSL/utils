@@ -1,5 +1,15 @@
 from .conv import ConvBlock
 from .embedding import DeEmbedding, FeatureEmbedding
+from .glm import (
+    BaseGLM,
+    Predictor,
+    PredictorMode,
+    LogStackedTruncatedNormal,
+    NegativeBinomial,
+    StackedTruncatedNormal,
+    Tweedie,
+    ZeroInflatedLogNormal,
+)
 from .linear import (
     Activation,
     CholeskyTrilLinear,
@@ -13,10 +23,6 @@ from .module import Module
 from .prob import (
     DDPM,
     GaussianLinear,
-    LogStackedTruncatedNormal,
-    NegativeBinomial,
-    StackedTruncatedNormal,
-    ZeroInflatedLogNormal
 )
 from .transformer import (
     RotaryTemporalEmbedding,
@@ -27,6 +33,7 @@ from .transformer import (
 
 __all__ = [
     'Activation',
+    'BaseGLM',
     'CholeskyTrilLinear',
     'ConvBlock',
     'DDPM',
@@ -41,10 +48,13 @@ __all__ = [
     'Module',
     'MonotonicLinear',
     'NegativeBinomial',
+    'Predictor',
+    'PredictorMode',
     'RotaryTemporalEmbedding',
     'SinusoidalTemporalEmbedding',
     'StackedTruncatedNormal',
     'TransformerDecoderLayer',
     'TransformerEncoderLayer',
+    'Tweedie',
     'ZeroInflatedLogNormal',
 ]
