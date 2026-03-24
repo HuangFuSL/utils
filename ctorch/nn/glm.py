@@ -33,7 +33,6 @@ class Predictor(NamedTuple):
         init_or_value (float | int | None): The initial value for the predictor if it is a global learnable parameter, or the fixed value if it is a global fixed parameter. Should be None for sample-wise predictors.
         raw_transform (OptionalTransform): An optional transform to apply to the raw predictor value before using it in the model. This can be a string name of an activation function (e.g., 'relu', 'softplus'), a torch.nn.Module instance, or a callable function. If None, no transform is applied.
     '''
-    name: str
     mode: PredictorMode
     init_or_value: float | int | None = None
     raw_transform: OptionalTransform = None
@@ -60,38 +59,38 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
             raise ValueError('The registered predictors do not match the predictor tuple type fields.')
         self._fc = torch.nn.LazyLinear(out_features=self.num_predictors)
 
-    def _register_predictor(self, predictor: Predictor):
-        if predictor.name in self.global_predictors or \
-            predictor.name in self.samplewise_predictors:
-            raise ValueError(f'Predictor {predictor.name} has already been registered.')
+    def _register_predictor(self, name: str, predictor: Predictor):
+        if name in self.global_predictors or \
+            name in self.samplewise_predictors:
+            raise ValueError(f'Predictor {name} has already been registered.')
         match predictor:
             case Predictor(
-                name, PredictorMode.GLOBAL_LEARNABLE, float() | int() as init, _
+                PredictorMode.GLOBAL_LEARNABLE, float() | int() as init, _
             ):
                 self.register_parameter(name, torch.nn.Parameter(torch.tensor(init)))
                 self.global_predictors.append(name)
             case Predictor(
-                name, PredictorMode.GLOBAL_FIXED, float() | int() as value, None
+                PredictorMode.GLOBAL_FIXED, float() | int() as value, None
             ):
                 self.register_buffer(name, torch.tensor(value))
                 self.global_predictors.append(name)
             case Predictor(
-                name, PredictorMode.SAMPLEWISE, None, _
+                PredictorMode.SAMPLEWISE, None, _
             ):
                 self.samplewise_predictors.append(name)
             case _:
                 raise ValueError(f'Invalid predictor registration: {predictor}')
         match predictor.raw_transform:
-            case str() as name:
-                self.transforms[predictor.name] = Activation(name)
+            case str() as activation:
+                self.transforms[name] = Activation(activation)
             case torch.nn.Module() as module:
-                self.transforms[predictor.name] = module
+                self.transforms[name] = module
             case func if callable(func):
-                self.transforms[predictor.name] = FuncWrapper(func)
+                self.transforms[name] = FuncWrapper(func)
             case None:
                 pass
             case _:
-                raise ValueError(f'Invalid raw_transform for predictor {predictor.name}: {predictor.raw_transform}')
+                raise ValueError(f'Invalid raw_transform for predictor {name}: {predictor.raw_transform}')
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         eta_list = list(torch.unbind(self.fc(input), dim=-1))
@@ -180,8 +179,8 @@ class NegativeBinomial(BaseGLM):
 
     def __init__(self, mu: Predictor, alpha: Predictor):
         super().__init__()
-        self._register_predictor(mu)
-        self._register_predictor(alpha)
+        self._register_predictor('mu', mu)
+        self._register_predictor('alpha', alpha)
         self._finalize_register_predictors()
 
     def _guard_predictors(self, eta) -> None:
@@ -234,8 +233,8 @@ class StackedTruncatedNormal(BaseGLM):
             raise ValueError(f'Require lb < ub, got lb={lb}, ub={ub}')
         self.register_buffer('lb', torch.tensor(lb))
         self.register_buffer('ub', torch.tensor(ub))
-        self._register_predictor(Predictor('mu', PredictorMode.SAMPLEWISE))
-        self._register_predictor(sigma)
+        self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE))
+        self._register_predictor('sigma', sigma)
         self.normal = torch.distributions.Normal(0.0, 1.0)
 
         if TYPE_CHECKING:
@@ -386,11 +385,11 @@ class Tweedie(BaseGLM):
 
     def __init__(self, mu_transform: Transform, phi: Predictor, power: Predictor):
         super().__init__()
-        self._register_predictor(Predictor(
-            'mu', PredictorMode.SAMPLEWISE, None, mu_transform
+        self._register_predictor('mu', Predictor(
+            PredictorMode.SAMPLEWISE, None, mu_transform
         ))
-        self._register_predictor(phi)
-        self._register_predictor(power)
+        self._register_predictor('phi', phi)
+        self._register_predictor('power', power)
         self._finalize_register_predictors()
 
     def _guard_predictors(self, eta) -> None:
@@ -441,15 +440,11 @@ class ZeroInflatedLogNormal(BaseGLM):
     ])
     def __init__(self, sigma: Predictor | None = None):
         super(ZeroInflatedLogNormal, self).__init__()
-        self._register_predictor(Predictor(
-            'logit', PredictorMode.SAMPLEWISE, None, None
-        ))
-        self._register_predictor(Predictor(
-            'mu', PredictorMode.SAMPLEWISE, None, None
-        ))
+        self._register_predictor('logit', Predictor(PredictorMode.SAMPLEWISE))
+        self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE))
         if sigma is None:
-            sigma = Predictor('sigma', PredictorMode.GLOBAL_FIXED, 1)
-        self._register_predictor(sigma)
+            sigma = Predictor(PredictorMode.GLOBAL_FIXED, 1)
+        self._register_predictor('sigma', sigma)
 
         self._finalize_register_predictors()
         self.register_buffer('const', 0.5 * torch.log(torch.tensor(2 * torch.pi)))
