@@ -28,7 +28,6 @@ class Predictor(NamedTuple):
     A predictor for a GLM, which can be either a global learnable parameter, a global fixed parameter, or a sample-wise predictor.
 
     Args:
-        name (str): The name of the predictor, which should be unique across all predictors in the model.
         mode (PredictorMode): The mode of the predictor, which determines how it is registered and used in the model.
         init_or_value (float | int | None): The initial value for the predictor if it is a global learnable parameter, or the fixed value if it is a global fixed parameter. Should be None for sample-wise predictors.
         raw_transform (OptionalTransform): An optional transform to apply to the raw predictor value before using it in the model. This can be a string name of an activation function (e.g., 'relu', 'softplus'), a torch.nn.Module instance, or a callable function. If None, no transform is applied.
@@ -40,6 +39,14 @@ class Predictor(NamedTuple):
 class BaseGLM(Module, abc.ABC, Generic[T]):
     '''
     Base class for Generalized Linear Models (GLMs). This class defines the common interface and functionality for GLM implementations. The forward method computes the predicted mean of the response variable given the input features, while the loss method computes the sample-wise negative log-likelihood loss for the given input and target tensors.
+
+    Any subclasses should:
+
+    1. register predictors using the ``_register_predictor`` method in the ``__init__`` method.
+    2. call ``_finalize_register_predictors`` after all predictors have been registered.
+    3. implement the ``inverse_link`` method to compute the predicted mean from the transformed predictors.
+    4. implement the ``negative_log_likelihood`` method to compute the negative log-likelihood loss given the transformed predictors and the target tensor.
+    5. (optional) implement the ``_guard_predictors`` method to check if the predictors are within the expected range, which will be called in debug mode.
     '''
     predictor_tuple_type: Type[T]
 
@@ -50,14 +57,14 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         self.transforms = torch.nn.ModuleDict()
         self._fc = None
 
-    def _guard_predictors(self, eta: T) -> None:
+    def _guard_predictors(self, predictors: T) -> None:
         # Raise an error if any predictor falls outside the expected range.
         pass
 
     def _finalize_register_predictors(self):
         if set(self.predictor_tuple_type._fields) != set(self.global_predictors + self.samplewise_predictors):
             raise ValueError('The registered predictors do not match the predictor tuple type fields.')
-        self._fc = torch.nn.LazyLinear(out_features=self.num_predictors)
+        self._fc = torch.nn.LazyLinear(out_features=self.num_samplewise_predictors)
 
     def _register_predictor(self, name: str, predictor: Predictor):
         if name in self.global_predictors or \
@@ -67,12 +74,14 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
             case Predictor(
                 PredictorMode.GLOBAL_LEARNABLE, float() | int() as init, _
             ):
-                self.register_parameter(name, torch.nn.Parameter(torch.tensor(init)))
+                self.register_parameter(name, torch.nn.Parameter(
+                    torch.tensor(init).float()
+                ))
                 self.global_predictors.append(name)
             case Predictor(
                 PredictorMode.GLOBAL_FIXED, float() | int() as value, None
             ):
-                self.register_buffer(name, torch.tensor(value))
+                self.register_buffer(name, torch.tensor(value).float())
                 self.global_predictors.append(name)
             case Predictor(
                 PredictorMode.SAMPLEWISE, None, _
@@ -93,16 +102,16 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
                 raise ValueError(f'Invalid raw_transform for predictor {name}: {predictor.raw_transform}')
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        eta_list = list(torch.unbind(self.fc(input), dim=-1))
-        return self.eta_forward(self.to_predictors(eta_list))
+        predictor_list = list(torch.unbind(self.fc(input), dim=-1))
+        return self.inverse_link(self.to_predictors(predictor_list))
 
     def loss(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        eta_list = list(torch.unbind(self.fc(input), dim=-1))
-        return self.eta_loss(self.to_predictors(eta_list), target)
+        predictor_list = list(torch.unbind(self.fc(input), dim=-1))
+        return self.negative_log_likelihood(self.to_predictors(predictor_list), target)
 
-    def to_predictors(self, eta_list: List[torch.Tensor]) -> T:
+    def to_predictors(self, predictor_list: List[torch.Tensor]) -> T:
         samplewise_map = {
-            name: eta_list[i]
+            name: predictor_list[i]
             for i, name in enumerate(self.samplewise_predictors)
         }
 
@@ -123,7 +132,7 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         return ret
 
     @property
-    def num_predictors(self) -> int:
+    def num_samplewise_predictors(self) -> int:
         return len(self.samplewise_predictors)
 
     @property
@@ -133,12 +142,12 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         return self._fc
 
     @abc.abstractmethod
-    def eta_forward(self, input: T) -> torch.Tensor:
+    def inverse_link(self, input: T) -> torch.Tensor:
         '''
-        Forward pass to compute the linear predictors (eta) before applying the link function. This is useful for computing the distribution parameters in the loss function.
+        Forward pass to compute the predicted mean of the response variable given the transformed predictors.
 
         Args:
-            input (torch.Tensor): Input tensor of shape (\\*, in_features).
+            input (T): A named tuple containing the transformed predictors.
 
         Returns:
             torch.Tensor: Output tensor of shape (\\*, num_predictors).
@@ -146,8 +155,92 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         pass
 
     @abc.abstractmethod
-    def eta_loss(self, eta: T, target: torch.Tensor) -> torch.Tensor:
+    def negative_log_likelihood(self, predictors: T, target: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute the sample-wise negative log-likelihood loss for the given transformed predictors and target tensor.
+
+        Args:
+            predictors (T): A named tuple containing the transformed predictors.
+            target (torch.Tensor): The target tensor of shape (\\*,).
+
+        Returns:
+            torch.Tensor: The sample-wise negative log-likelihood loss tensor of shape (\\*,).
+        '''
         pass
+
+
+class LinearRegression(BaseGLM):
+    '''
+    Linear regression model with Gaussian likelihood and identity link function. This serves as a prediction head with MSE loss.
+    '''
+    predictor_tuple_type = NamedTuple('LinearRegressionPredictors', [
+        ('mu', torch.Tensor),
+    ])
+
+    def __init__(self):
+        super().__init__()
+        self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE))
+        self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> None:
+        pass
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.mu
+
+    def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+        return 0.5 * (predictors.mu - target).pow(2)
+
+
+class LogisticRegression(BaseGLM):
+    '''
+    Logistic regression model with Bernoulli likelihood and logit link function. This serves as a prediction head with binary cross-entropy loss.
+
+    Note that the output of the model is the predicted probability of the positive class, obtained by applying the sigmoid function to the linear predictor (logit).
+    '''
+    predictor_tuple_type = NamedTuple('LogisticRegressionPredictors', [
+        ('logit', torch.Tensor),
+    ])
+
+    def __init__(self):
+        super().__init__()
+        self._register_predictor('logit', Predictor(PredictorMode.SAMPLEWISE))
+        self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> None:
+        pass
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return torch.sigmoid(predictors.logit)
+
+    def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+        return torch.nn.functional.binary_cross_entropy_with_logits(
+            predictors.logit, target.float(), reduction='none'
+        )
+
+class PoissonRegression(BaseGLM):
+    '''
+    Poisson regression model with Poisson likelihood and log link function. This serves as a prediction head with Poisson loss.
+
+    Note that the output of the model is the predicted mean of the Poisson distribution, obtained by applying the exponential function to the linear predictor (log-mean).
+    '''
+    predictor_tuple_type = NamedTuple('PoissonRegressionPredictors', [
+        ('log_mu', torch.Tensor),
+    ])
+
+    def __init__(self):
+        super().__init__()
+        self._register_predictor('log_mu', Predictor(PredictorMode.SAMPLEWISE))
+        self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> None:
+        pass
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.log_mu.exp()
+
+    def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+        return predictors.log_mu.exp() - target * predictors.log_mu + torch.lgamma(target + 1)
 
 
 class NegativeBinomial(BaseGLM):
@@ -183,20 +276,20 @@ class NegativeBinomial(BaseGLM):
         self._register_predictor('alpha', alpha)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, eta) -> None:
-        if torch.any(eta.mu <= 0):
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.mu <= 0):
             raise ValueError('Predictor mu must be positive.')
-        if torch.any(eta.alpha <= 0):
+        if torch.any(predictors.alpha <= 0):
             raise ValueError('Predictor alpha must be positive.')
 
-    def eta_forward(self, eta) -> torch.Tensor:
-        return eta.mu
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.mu
 
-    def eta_loss(self, eta, target) -> torch.Tensor:
+    def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         self._check_non_negative(target)
-        log_mu, log_alpha = eta.mu.log(), eta.alpha.log()
+        log_mu, log_alpha = predictors.mu.log(), predictors.alpha.log()
         log_mu_alpha = torch.logaddexp(log_mu, log_alpha)
-        alpha_exp = eta.alpha
+        alpha_exp = predictors.alpha
         target = target.float()
 
         return -(
@@ -245,12 +338,12 @@ class StackedTruncatedNormal(BaseGLM):
         self.has_ub = torch.isfinite(self.ub).item()
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, eta) -> None:
-        if torch.any(eta.sigma <= 0):
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
 
-    def eta_forward(self, eta) -> torch.Tensor:
-        mu, sigma = eta.mu, eta.sigma
+    def inverse_link(self, predictors) -> torch.Tensor:
+        mu, sigma = predictors.mu, predictors.sigma
 
         z_l, z_u = (self.lb - mu) / sigma, (self.ub - mu) / sigma
         Phi_l, Phi_u = torch.special.ndtr(z_l), torch.special.ndtr(z_u)
@@ -266,8 +359,8 @@ class StackedTruncatedNormal(BaseGLM):
 
         return ret
 
-    def eta_loss(self, eta, target: torch.Tensor) -> torch.Tensor:
-        mu, sigma = eta.mu, eta.sigma
+    def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
+        mu, sigma = predictors.mu, predictors.sigma
 
         is_left = target <= self.lb
         is_right = target >= self.ub
@@ -302,12 +395,12 @@ class LogStackedTruncatedNormal(StackedTruncatedNormal):
     ):
         super().__init__(sigma, lb, ub)
 
-    def _guard_predictors(self, eta) -> None:
-        if torch.any(eta.sigma <= 0):
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
 
-    def eta_forward(self, eta) -> torch.Tensor:
-        mu, sigma = eta.mu, eta.sigma
+    def inverse_link(self, predictors) -> torch.Tensor:
+        mu, sigma = predictors.mu, predictors.sigma
 
         z_l, z_u = (self.lb - mu) / sigma, (self.ub - mu) / sigma
         Phi_l, Phi_u = torch.special.ndtr(z_l), torch.special.ndtr(z_u)
@@ -328,10 +421,10 @@ class LogStackedTruncatedNormal(StackedTruncatedNormal):
 
         return ret
 
-    def eta_loss(self, eta, target: torch.Tensor) -> torch.Tensor:
+    def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
         log_tgt = target.log()
         jacobian_mask = (log_tgt > self.lb) & (log_tgt < self.ub)
-        return super().eta_loss(eta, log_tgt) + log_tgt * jacobian_mask.float()
+        return super().negative_log_likelihood(predictors, log_tgt) + log_tgt * jacobian_mask.float()
 
 class Tweedie(BaseGLM):
     '''
@@ -392,19 +485,19 @@ class Tweedie(BaseGLM):
         self._register_predictor('power', power)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, eta) -> None:
-        if torch.any(eta.mu <= 0):
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.mu <= 0):
             raise ValueError('Predictor mu must be positive.')
-        if torch.any(eta.phi <= 0):
+        if torch.any(predictors.phi <= 0):
             raise ValueError('Predictor phi must be positive.')
-        if torch.any((eta.power <= 1) | (eta.power >= 2)):
+        if torch.any((predictors.power <= 1) | (predictors.power >= 2)):
             raise ValueError('Predictor power must be in the range (1, 2).')
 
-    def eta_forward(self, eta) -> torch.Tensor:
-        return eta.mu
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.mu
 
-    def eta_loss(self, eta, target: torch.Tensor) -> torch.Tensor:
-        mu, phi, p = eta.mu, eta.phi, eta.power
+    def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
+        mu, phi, p = predictors.mu, predictors.phi, predictors.power
         self._check_non_negative(target)
 
         nll = (
@@ -451,18 +544,18 @@ class ZeroInflatedLogNormal(BaseGLM):
         if TYPE_CHECKING:
             self.const: torch.Tensor
 
-    def _guard_predictors(self, eta) -> None:
-        if torch.any(eta.sigma <= 0):
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
 
-    def eta_forward(self, eta) -> torch.Tensor:
-        logit, mu, sigma = eta.logit, eta.mu, eta.sigma
+    def inverse_link(self, predictors) -> torch.Tensor:
+        logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
 
         prob = torch.sigmoid(logit)
         return prob * torch.exp(mu + 0.5 * sigma.pow(2))
 
-    def eta_loss(self, eta, target):
-        logit, mu, sigma = eta.logit, eta.mu, eta.sigma
+    def negative_log_likelihood(self, predictors, target):
+        logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
 
         nonzero_mask = target > 0
         safe_target = torch.where(nonzero_mask, target, torch.ones_like(target))
