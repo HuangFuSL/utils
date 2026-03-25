@@ -295,7 +295,6 @@ class NegativeBinomial(BaseGLM):
         return predictors.mu
 
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
-        self._check_non_negative(target)
         log_mu, log_alpha = predictors.mu.log(), predictors.alpha.log()
         log_mu_alpha = torch.logaddexp(log_mu, log_alpha)
         alpha_exp = predictors.alpha
@@ -522,7 +521,6 @@ class Tweedie(BaseGLM):
 
     def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
         mu, phi, p = predictors.mu, predictors.phi, predictors.power
-        self._check_non_negative(target)
 
         nll = (
             target.pow(2.0 - p) / ((1.0 - p) * (2.0 - p))
