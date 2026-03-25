@@ -61,6 +61,10 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         # Raise an error if any predictor falls outside the expected range.
         pass
 
+    def _guard_target(self, target: torch.Tensor) -> None:
+        # Raise an error if the target tensor falls outside the expected range (e.g., negative values for count data).
+        pass
+
     def _finalize_register_predictors(self):
         if set(self.predictor_tuple_type._fields) != set(self.global_predictors + self.samplewise_predictors):
             raise ValueError('The registered predictors do not match the predictor tuple type fields.')
@@ -106,6 +110,8 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         return self.inverse_link(self.to_predictors(predictor_list))
 
     def loss(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        if self._debug:
+            self._guard_target(target)
         predictor_list = list(torch.unbind(self.fc(input), dim=-1))
         return self.negative_log_likelihood(self.to_predictors(predictor_list), target)
 
@@ -182,9 +188,6 @@ class LinearRegression(BaseGLM):
         self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE))
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
-        pass
-
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
 
@@ -207,8 +210,9 @@ class LogisticRegression(BaseGLM):
         self._register_predictor('logit', Predictor(PredictorMode.SAMPLEWISE))
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
-        pass
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any((target != 0) & (target != 1)):
+            raise ValueError('Target tensor for LogisticRegression must be binary (0 or 1).')
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return torch.sigmoid(predictors.logit)
@@ -233,8 +237,9 @@ class PoissonRegression(BaseGLM):
         self._register_predictor('log_mu', Predictor(PredictorMode.SAMPLEWISE))
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
-        pass
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target < 0):
+            raise ValueError('Target tensor for PoissonRegression must be non-negative.')
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.log_mu.exp()
@@ -281,6 +286,10 @@ class NegativeBinomial(BaseGLM):
             raise ValueError('Predictor mu must be positive.')
         if torch.any(predictors.alpha <= 0):
             raise ValueError('Predictor alpha must be positive.')
+
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target < 0):
+            raise ValueError('Target tensor for NegativeBinomial must be non-negative.')
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
@@ -342,6 +351,10 @@ class StackedTruncatedNormal(BaseGLM):
         if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
 
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target < self.lb) or torch.any(target > self.ub):
+            raise ValueError(f'Target tensor for StackedTruncatedNormal must be in the range [{self.lb.item()}, {self.ub.item()}].')
+
     def inverse_link(self, predictors) -> torch.Tensor:
         mu, sigma = predictors.mu, predictors.sigma
 
@@ -398,6 +411,13 @@ class LogStackedTruncatedNormal(StackedTruncatedNormal):
     def _guard_predictors(self, predictors) -> None:
         if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
+
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target <= 0):
+            raise ValueError('Target tensor for LogStackedTruncatedNormal must be positive.')
+        log_target = target.log()
+        if torch.any(log_target < self.lb) or torch.any(log_target > self.ub):
+            raise ValueError(f'Target tensor for LogStackedTruncatedNormal must have log-values in the range [{self.lb.item()}, {self.ub.item()}].')
 
     def inverse_link(self, predictors) -> torch.Tensor:
         mu, sigma = predictors.mu, predictors.sigma
@@ -493,6 +513,10 @@ class Tweedie(BaseGLM):
         if torch.any((predictors.power <= 1) | (predictors.power >= 2)):
             raise ValueError('Predictor power must be in the range (1, 2).')
 
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target < 0):
+            raise ValueError('Target tensor for Tweedie must be non-negative.')
+
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
 
@@ -547,6 +571,10 @@ class ZeroInflatedLogNormal(BaseGLM):
     def _guard_predictors(self, predictors) -> None:
         if torch.any(predictors.sigma <= 0):
             raise ValueError('Predictor sigma must be positive.')
+
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if torch.any(target <= 0):
+            raise ValueError('Target tensor for ZeroInflatedLogNormal must be positive.')
 
     def inverse_link(self, predictors) -> torch.Tensor:
         logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
