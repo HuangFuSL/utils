@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import atexit
 import dataclasses
+import signal
 import logging
 import multiprocessing as mp
 import re
@@ -138,6 +139,7 @@ class AsyncNotebookExecutor():
     env: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     task: asyncio.Task[None] | None = dataclasses.field(init=False, default=None)
+    client: NotebookClient | None = dataclasses.field(init=False, default=None)
 
     def inject_env(self, nb: nbformat.NotebookNode):
         injected_cell = nbformat.v4.new_code_cell(
@@ -160,6 +162,10 @@ class AsyncNotebookExecutor():
 
         def on_notebook_start(notebook):
             logging.info(f'Worker {self.index}: kernel started for {nb_path.name}')
+            # Unregister SIGINT handler
+            loop = asyncio.get_running_loop()
+            loop.remove_signal_handler(signal.SIGINT)
+            loop.remove_signal_handler(signal.SIGTERM)
         def on_notebook_complete(notebook):
             logging.info(f'Worker {self.index}: kernel finished for {nb_path.name}')
         def on_cell_execute(cell, cell_index):
@@ -171,7 +177,7 @@ class AsyncNotebookExecutor():
             logging.warning(f'Worker {self.index}: error details: {execute_reply}')
 
 
-        client = NotebookClient(
+        self.client = NotebookClient(
             nb, km=None,
             timeout=self.config.execution_timeout,
             resources={'metadata': {'path': str(self.config.cwd)}},
@@ -184,7 +190,8 @@ class AsyncNotebookExecutor():
         )
 
         try:
-            await client.async_execute()
+            if self.client is not None:
+                await self.client.async_execute()
         except Exception as e:
             logging.error(f'Worker {self.index}: execution failed for {nb_path.name}: {e}')
             logging.error(traceback.format_exc())
@@ -210,6 +217,8 @@ class AsyncNotebookExecutor():
     def cancel(self):
         if self.task is not None:
             self.task.cancel()
+        if self.client is not None and self.client.km is not None:
+            self.client.km.shutdown_kernel(now=True)
 
 class MainExecutor():
     def __init__(self, config: Config):
