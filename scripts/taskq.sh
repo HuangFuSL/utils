@@ -88,7 +88,7 @@ ensure_state() {
 
 # Check if the dispatcher screen session is running
 screen_running() {
-  screen -S "$SESSION_NAME" -Q select . >/dev/null 2>&1
+  screen -ls 2>/dev/null | grep -Fq ".${SESSION_NAME}"
 }
 
 # Extract the original command line from a job file for logging purposes
@@ -156,8 +156,24 @@ enqueue_job() {
   local job_id
   printf -v job_id '%010d' "$seq"
 
+  local submit_cwd="$PWD"
+  local -a argv=("$@")
+  local target_cmd="${argv[0]}"
+
+  if [[ "$target_cmd" != */* ]]; then
+    if [[ -x "$submit_cwd/$target_cmd" ]]; then
+      argv[0]="./$target_cmd"
+    else
+      if ! local command_path="$(command -v "$target_cmd" 2>/dev/null)"; then
+        printf 'error: command not found: %s\n' "$target_cmd" >&2
+        exit 127
+      fi
+      argv[0]="$command_path"
+    fi
+  fi
+
   local cmdline
-  cmdline="$(format_cmdline "$@")"
+  cmdline="$(format_cmdline "${argv[@]}")"
 
   local tmp="$QUEUE_DIR/.${job_id}.$$.$RANDOM.tmp"
   local job="$QUEUE_DIR/${job_id}.job"
@@ -165,10 +181,13 @@ enqueue_job() {
   {
     printf '#!/usr/bin/env bash\n'
     printf 'set -euo pipefail\n'
+    printf '# cwd: %s\n' "$submit_cwd"
     printf '# cmdline: %s\n' "$cmdline"
+    printf 'export PATH=%q\n' "$PATH"
+    printf 'cd %q\n' "$submit_cwd"
     printf 'exec'
     local arg
-    for arg in "$@"; do
+    for arg in "${argv[@]}"; do
       printf ' %q' "$arg"
     done
     printf '\n'
@@ -178,7 +197,6 @@ enqueue_job() {
   mv "$tmp" "$job"
 
   exec 7>&-
-
   printf '%s\n' "$job_id"
 }
 
@@ -310,8 +328,19 @@ show_status() {
 
   printf 'script path: %s\n' "$SELF_PATH"
   printf 'state dir: %s\n' "$STATE_DIR"
-  printf 'queued jobs: %s\n' "$queued"
-  printf 'running jobs: %s\n' "$running"
+  # print the command line of the running job
+  if (( running > 0 )); then
+    printf 'running job:\n'
+    for job in "${running_files[@]}"; do
+      local cmdline
+      cmdline="$(extract_cmdline "$job")"
+      printf '  %s: %s\n' "$(basename "$job")" "$cmdline"
+    done
+    # Only if there are running jobs, there are queued jobs.
+    printf 'queued jobs: %s\n' "$queued"
+  else
+    printf 'no running jobs\n'
+  fi
   printf 'failed jobs: %s\n' "$failed"
 }
 
@@ -329,7 +358,7 @@ usage() {
 usage:
   $0 <command> [args...]
   $0 --status
-  $0 --stop
+  $0 --kill
   $0 --dispatcher --idle-timeout <seconds>
 
 environment:
@@ -338,8 +367,7 @@ environment:
 
 notes:
   - Symbolic links to the script are resolved.
-  - Only the stale jobs in the queue or running directories will be cleaned up when a new dispatcher is started.
-  - Stale jobs will not be executed, but their command lines will be printed to stderr.
+  - [IMPORTANT] All the stale jobs in the queue or running directories will be cleaned up when a new dispatcher is started. Stale jobs will not be executed, but their command lines will be printed to stderr.
 
 examples:
   $0 python job.py
@@ -379,7 +407,7 @@ main() {
     --status)
       show_status
       ;;
-    --stop)
+    --kill)
       stop_dispatcher
       ;;
     --help|-h)
