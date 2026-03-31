@@ -113,7 +113,7 @@ class Config():
 
     @property
     def notebook_template_path(self) -> Path:
-        path = Path(self.notebook_template_name)
+        path = Path(self.notebook_template_name).expanduser()
         if path.is_absolute():
             return path.resolve()
         else:
@@ -122,7 +122,7 @@ class Config():
     @property
     def cwd(self) -> Path:
         if self.execution_cwd is not None:
-            path = Path(self.execution_cwd)
+            path = Path(self.execution_cwd).expanduser()
             if path.is_absolute():
                 return path.resolve()
             else:
@@ -355,7 +355,7 @@ if __name__ == '__main__':
             'This script is not supported on Windows due to limitations in process management.'
         )
     config = Config.from_cli()
-    tempfile_path = config.script_dir / f'.{config.notebook_template_path.stem}_run_nb.lock'
+    tempfile_path = config.notebook_template_path.parent / f'.{config.notebook_template_path.stem}_run_nb.lock'
     if tempfile_path.exists():
         raise RuntimeError(f'A same instance is already running.')
     else:

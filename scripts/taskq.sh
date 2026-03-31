@@ -278,16 +278,17 @@ submit_job() {
 
   if ! screen_running; then
     cleanup_stale_jobs_locked
-    screen -DmS "$SESSION_NAME" \
-      bash "$SELF_PATH" --dispatcher --idle-timeout "$idle_timeout"
+    (
+      exec 7>&- 8>&- 9>&-
+      exec </dev/null >/dev/null 2>&1
+      exec screen -dmS "$SESSION_NAME" \
+        bash "$SELF_PATH" --dispatcher --idle-timeout "$idle_timeout"
+    )
   fi
 
-  local job_id
-  job_id="$(enqueue_job "$@")"
+  SUBMITTED_JOB_ID="$(enqueue_job "$@")"
 
   exec 8>&-
-
-  printf '%s\n' "$job_id"
 }
 
 show_status() {
@@ -389,9 +390,8 @@ main() {
       exit 2
       ;;
     *)
-      local job_id
-      job_id="$(submit_job "$DEFAULT_IDLE_TIMEOUT" "$@")"
-      printf 'queued job: %s\n' "$job_id"
+      submit_job "$DEFAULT_IDLE_TIMEOUT" "$@"
+      printf 'queued job: %s\n' "$SUBMITTED_JOB_ID"
       printf 'dispatcher session: %s\n' "$SESSION_NAME"
       ;;
   esac
