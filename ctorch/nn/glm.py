@@ -595,3 +595,85 @@ class ZeroInflatedLogNormal(BaseGLM):
             torch.where(nonzero_mask, lognormal_loss, torch.zeros_like(lognormal_loss)) +
             torch.where(nonzero_mask, jacobian_loss, torch.zeros_like(jacobian_loss))
         )
+
+class PoissonGamma(BaseGLM):
+    '''
+    Poisson-Gamma regression model for modeling the sum of a series of i.i.d Gamma random variables where the number of terms in the sum follows a Poisson distribution.
+
+    .. math::
+        \\begin{aligned}
+            Y &= \\sum_{i=1}^N X_i \\\\
+            N &\\sim \\text{Poisson}(\\boldsymbol{\\lambda}) \\\\
+            X_i &\\sim \\text{Gamma}(\\alpha, \\beta) \\\\
+            \\alpha &= \\frac{1}{\\boldsymbol{\\phi}} \\\\
+            \\beta &= \\frac{1}{\\boldsymbol{\\phi} \\boldsymbol{\\mu}}
+        \\end{aligned}
+
+    Target Shape:
+
+    - (\\*, 2): the first column is the sum of observed response variable over all events, and the second column is counts of events.
+    '''
+    predictor_tuple_type = NamedTuple('PoissonGammaPredictors', [
+        ('lambda_', torch.Tensor),
+        ('mu', torch.Tensor),
+        ('phi', torch.Tensor),
+    ])
+
+    def __init__(
+        self, lambda_transform: Transform, mu_transform: Transform,
+        phi: Predictor
+    ):
+        super().__init__()
+        self._register_predictor('lambda_', Predictor(
+            PredictorMode.SAMPLEWISE, raw_transform=lambda_transform
+        ))
+        self._register_predictor('mu', Predictor(
+            PredictorMode.SAMPLEWISE, raw_transform=mu_transform
+        ))
+        self._register_predictor('phi', phi)
+        self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> None:
+        if torch.any(predictors.lambda_ <= 0):
+            raise ValueError('Predictor lambda_ must be positive.')
+        if torch.any(predictors.mu <= 0):
+            raise ValueError('Predictor mu must be positive.')
+        if torch.any(predictors.phi <= 0):
+            raise ValueError('Predictor phi must be positive.')
+
+    def _guard_target(self, target: torch.Tensor) -> None:
+        value, count = map(lambda x: x.squeeze(-1), torch.chunk(target, 2, dim=-1))
+        if torch.any(value < 0):
+            raise ValueError(
+                'Value tensor for PoissonGamma must be positive.'
+            )
+        if torch.any(count < 0):
+            raise ValueError(
+                'Count tensor for PoissonGamma must be positive.'
+            )
+        if torch.any((count == 0) & (value != 0)):
+            raise ValueError('If count == 0, aggregate value must be 0.')
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return torch.stack([
+            predictors.mu * predictors.lambda_,
+            predictors.lambda_
+        ], dim=-1)
+
+    def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+        shape = predictors.mu.shape
+        value, count = map(lambda x: x.squeeze(-1), torch.chunk(target, 2, dim=-1))
+        mask = count > 0
+
+        lambda_, mu, phi = predictors.lambda_, predictors.mu, predictors.phi
+        alpha, beta = (1 / phi)[mask], (1 / (phi * mu))[mask]
+        value_m, count_m = value[mask], count[mask]
+
+        p = -lambda_ + torch.xlogy(count, lambda_) - torch.lgamma(count + 1)
+        g = p.new_zeros(p.shape)
+        g[mask] = (
+            torch.xlogy(count_m * alpha, beta) - torch.lgamma(count_m * alpha)
+            + torch.xlogy(count_m * alpha - 1, value_m) - beta * value_m
+        )
+
+        return -(p + g)
