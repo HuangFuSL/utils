@@ -312,36 +312,51 @@ submit_job() {
 show_status() {
   ensure_state
 
+  local is_running=false
+  if screen_running; then
+    is_running=true
+  fi
+
   local queued_files=("$QUEUE_DIR"/*.job)
   local running_files=("$RUN_DIR"/*.job)
   local failed_files=("$FAILED_DIR"/*.failed)
 
   local queued="${#queued_files[@]}"
-  local running="${#running_files[@]}"
   local failed="${#failed_files[@]}"
 
-  if screen_running; then
-    printf 'dispatcher: running (%s)\n' "$SESSION_NAME"
+  local bold_green=$'\033[1;32m'
+  local bold_red=$'\033[1;31m'
+  local bold_yellow=$'\033[1;33m'
+  local gray=$'\033[90m'
+  local reset=$'\033[0m'
+
+  if $is_running; then
+    printf 'Dispatcher: %sRUNNING%s at (%s)\n' "$bold_green" "$reset" "$SESSION_NAME"
   else
-    printf 'dispatcher: stopped\n'
+    printf 'Dispatcher: %sSTOPPED%s\n' "$bold_red" "$reset"
   fi
 
-  printf 'script path: %s\n' "$SELF_PATH"
-  printf 'state dir: %s\n' "$STATE_DIR"
-  # print the command line of the running job
-  if (( running > 0 )); then
-    printf 'running job:\n'
-    for job in "${running_files[@]}"; do
-      local cmdline
-      cmdline="$(extract_cmdline "$job")"
-      printf '  %s: %s\n' "$(basename "$job")" "$cmdline"
-    done
-    # Only if there are running jobs, there are queued jobs.
-    printf 'queued jobs: %s\n' "$queued"
-  else
-    printf 'no running jobs\n'
+  printf '%sScript path: %s%s\n' "$gray" "$SELF_PATH" "$reset"
+  printf '%sState dir: %s%s\n' "$gray" "$STATE_DIR" "$reset"
+
+  if $is_running; then
+    if (( ${#running_files[@]} > 0 )); then
+      local current_cmdline
+      current_cmdline="$(extract_cmdline "${running_files[0]}")"
+      printf '%sCurrent job%s: %s\n' "$bold_green" "$reset" "$current_cmdline"
+    else
+      printf '%sNo running jobs%s\n' "$bold_yellow" "$reset"
+    fi
+
+    if (( queued > 0 )); then
+      local upcoming_cmdline
+      upcoming_cmdline="$(extract_cmdline "${queued_files[0]}")"
+      printf '%sUpcoming job%s: %s\n' "$bold_yellow" "$reset" "$upcoming_cmdline"
+    fi
+
+    printf '%sQueued jobs: %s%s\n' "$bold_yellow" "$queued" "$reset"
+    printf '%sFailed jobs: %s%s\n' "$bold_red" "$failed" "$reset"
   fi
-  printf 'failed jobs: %s\n' "$failed"
 }
 
 stop_dispatcher() {
