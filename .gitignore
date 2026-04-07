@@ -203,3 +203,6 @@ doc/build/*
 !doc/build/latex/
 doc/build/latex/*
 !doc/build/latex/*.pdf
+
+# files created by taskq.sh
+.taskq/
