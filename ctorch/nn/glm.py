@@ -1,5 +1,6 @@
 import abc
 import enum
+import collections
 from typing import TYPE_CHECKING, Callable, Generic, List, NamedTuple, Type, TypeVar
 
 import torch
@@ -221,6 +222,74 @@ class LogisticRegression(BaseGLM):
         return torch.nn.functional.binary_cross_entropy_with_logits(
             predictors.logit, target.float(), reduction='none'
         )
+
+
+def DirichletRegression(
+    K: int, transform: Transform = torch.nn.functional.softplus
+) -> BaseGLM:
+    '''
+    Dirichlet regression model for simplex regression.
+
+    Args:
+        K (int): The number of classes.
+
+    Shapes:
+
+        * Input shape: (\\*, in_features).
+        * Output shape: (\\*, K) - the predicted class weight for each of the K classes.
+        * Target shape: (\\*, K)
+    '''
+    if K < 2:
+        raise ValueError(f'Number of classes K must be at least 2, got K={K}.')
+
+    t = collections.namedtuple(
+        'DirichletRegressionPredictors', [f'alpha_{i}' for i in range(K)]
+    )
+    class DirichletRegressionImpl(BaseGLM):
+        predictor_tuple_type = t
+
+        def __init__(self):
+            super().__init__()
+            for i in range(K):
+                self._register_predictor(f'alpha_{i}', Predictor(
+                    PredictorMode.SAMPLEWISE, raw_transform=transform
+                ))
+
+            self._finalize_register_predictors()
+
+        def _guard_predictors(self, predictors: t) -> None:
+            if torch.any(torch.stack(predictors, dim=-1) <= 0):
+                raise ValueError(
+                    'All predictors for DirichletRegression must be positive after applying the transform.'
+                )
+
+        def _guard_target(self, target: torch.Tensor) -> None:
+            if not target.is_floating_point():
+                raise ValueError('Target tensor for DirichletRegression must be a floating point tensor.')
+            if target.shape[-1] != K:
+                raise ValueError(f'Target tensor for DirichletRegression must have shape (\\*, {K}), got {target.shape}.')
+            if torch.any(target <= 0) or torch.any(target >= 1):
+                raise ValueError('Target tensor for DirichletRegression must be in the range (0, 1).')
+            if not torch.allclose(
+                target.sum(dim=-1), target.new_ones(target.shape[:-1]),
+                atol=1e-6, rtol=1e-6
+            ):
+                raise ValueError('Target tensor for DirichletRegression must sum to 1 along the last dimension.')
+
+        def inverse_link(self, predictors: t) -> torch.Tensor:
+            alpha = torch.stack(predictors, dim=-1)
+            return alpha / alpha.sum(dim=-1, keepdim=True)
+
+        def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+            alpha = torch.stack(predictors, dim=-1)
+            return -(
+                torch.lgamma(alpha.sum(dim=-1)) +
+                -torch.lgamma(alpha).sum(dim=-1) +
+                +((alpha - 1) * target.log()).sum(dim=-1)
+            )
+
+    return DirichletRegressionImpl()
+
 
 class PoissonRegression(BaseGLM):
     '''
@@ -677,3 +746,86 @@ class PoissonGamma(BaseGLM):
         )
 
         return -(p + g)
+
+class NegativeBinomialGamma(BaseGLM):
+    '''
+    Implements the negative log-likelihood loss for modeling the sum of a series of i.i.d Gamma random variables where the number of terms in the sum follows a Negative Binomial distribution.
+
+    Shapes:
+        * Input shape: (\\*, in_features).
+        * Output shape: (\\*)
+    '''
+    predictor_tuple_type = NamedTuple('NegativeBinomialGammaPredictors', [
+        ('mu', torch.Tensor),      # aggregate mean E[Y|x]
+        ('m', torch.Tensor),       # NB mean E[N|x]
+        ('r', torch.Tensor),       # NB shape / dispersion
+        ('alpha', torch.Tensor),   # Gamma shape
+    ])
+
+    def __init__(
+        self,
+        mu_transform: Transform, m_transform: Transform,
+        r: Predictor, alpha: Predictor,
+        n_terms: int = 16
+    ):
+        super().__init__()
+
+        self.n_terms = n_terms
+        self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE, raw_transform=mu_transform))
+        self._register_predictor('m', Predictor(PredictorMode.SAMPLEWISE, raw_transform=m_transform))
+        self._register_predictor('r', r)
+        self._register_predictor('alpha', alpha)
+        self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> None:
+        for name, value in predictors._asdict().items():
+            if not (value >= 0).all():
+                raise ValueError(f'Predictor {name} must be non-negative, but got min={value.min().item()}.')
+
+    def _guard_target(self, target: torch.Tensor) -> None:
+        if not (target >= 0).all():
+            raise ValueError(f'Target tensor must be non-negative, but got min={target.min().item()}.')
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.mu
+
+    def negative_log_likelihood(self, predictors, target: torch.Tensor):
+        mu = predictors.mu.unsqueeze(-1)
+        m = predictors.m.unsqueeze(-1)
+        r = predictors.r.unsqueeze(-1)
+        alpha = predictors.alpha.unsqueeze(-1)
+
+        non_zero_mask = target > 0
+        nll_zero = (r * torch.log1p(m / r)).squeeze(-1)
+        beta = (alpha * m / mu)
+
+        n = torch.arange(
+            1, self.n_terms + 1, device=target.device, dtype=target.dtype
+        ).view(*([1] * target.ndim), self.n_terms)
+        safe_target = torch.where(
+            non_zero_mask, target, torch.ones_like(target)
+        ).unsqueeze(-1)
+
+        # log NB(n; mean=m, shape=r)
+        log_nb = (
+            torch.lgamma(n + r)
+            - torch.lgamma(r)
+            - torch.lgamma(n + 1.0)
+            + r * (torch.log(r) - torch.log(r + m))
+            + n * (torch.log(m) - torch.log(r + m))
+        )
+
+        n_alpha = n * alpha
+
+        # log Gamma(y; shape=n*alpha, rate=beta)
+        log_gamma = (
+            n_alpha * torch.log(beta)
+            - torch.lgamma(n_alpha)
+            + (n_alpha - 1.0) * torch.log(safe_target)
+            - beta * safe_target
+        )
+
+        log_mix = torch.logsumexp(log_nb + log_gamma, dim=-1)
+        nll_pos = -log_mix
+
+        return torch.where(non_zero_mask, nll_pos, nll_zero)
