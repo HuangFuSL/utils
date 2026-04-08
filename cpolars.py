@@ -3,6 +3,40 @@ from typing import List, Sequence, Type
 from polars.datatypes.classes import NumericType
 import polars as pl
 
+def flatten_describe(
+    df: pl.DataFrame, keys: List[str],
+    *describe_args, **describe_kwargs
+) -> pl.DataFrame:
+    '''
+    Flatten the output of `df.describe()` into a one-row DataFrame with columns named as "statistic_column".
+
+    Args:
+        df (pl.DataFrame): The input DataFrame to describe.
+        keys (List[str]): The list of statistics to include.
+        *describe_args: Additional arguments to pass to `df.describe()`.
+        **describe_kwargs: Additional keyword arguments to pass to `df.describe()`.
+
+    Returns:
+        pl.DataFrame: A flattened DataFrame containing the descriptive statistics.
+    '''
+    return df.describe(*describe_args, **describe_kwargs).filter(
+        pl.col('statistic').is_in(keys)
+    ).unpivot(
+        index='statistic',
+        value_name='value',
+        variable_name='column'
+    ).filter(
+        pl.col('value').is_not_null()
+    ).with_columns(
+        (pl.col('statistic') + '_' + pl.col('column')).alias('column_stat'),
+        pl.lit(0).alias('idx')
+    ).pivot(
+        on='column_stat',
+        index='idx',
+        values='value',
+        sort_columns=True
+    ).drop('idx')
+
 
 def add_shard_column(
     df: pl.DataFrame, num_shards: int, dest_col: str,
