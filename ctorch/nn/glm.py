@@ -58,13 +58,13 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         self.transforms = torch.nn.ModuleDict()
         self._fc = None
 
-    def _guard_predictors(self, predictors: T) -> None:
-        # Raise an error if any predictor falls outside the expected range.
-        pass
+    def _guard_predictors(self, predictors: T) -> str | None:
+        # Return an error message if any predictor falls outside the expected range.
+        return
 
-    def _guard_target(self, target: torch.Tensor) -> None:
-        # Raise an error if the target tensor falls outside the expected range (e.g., negative values for count data).
-        pass
+    def _guard_target(self, target: torch.Tensor) -> str | None:
+        # Return an error message if the target tensor falls outside the expected range (e.g., negative values for count data).
+        return
 
     def _finalize_register_predictors(self):
         if set(self.predictor_tuple_type._fields) != set(self.global_predictors + self.samplewise_predictors):
@@ -112,7 +112,9 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
 
     def loss(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self._debug:
-            self._guard_target(target)
+            msg = self._guard_target(target)
+            if msg is not None:
+                raise ValueError(f'Target guard failed: {msg}')
         predictor_list = list(torch.unbind(self.fc(input), dim=-1))
         return self.negative_log_likelihood(self.to_predictors(predictor_list), target)
 
@@ -135,7 +137,9 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
 
         ret = _ensure_shape(self.predictor_tuple_type(**predictors_dict))
         if self._debug:
-            self._guard_predictors(ret)
+            msg = self._guard_predictors(ret)
+            if msg is not None:
+                raise ValueError(f'Predictor guard failed: {msg}')
         return ret
 
     @property
@@ -211,9 +215,9 @@ class LogisticRegression(BaseGLM):
         self._register_predictor('logit', Predictor(PredictorMode.SAMPLEWISE))
         self._finalize_register_predictors()
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor):
         if torch.any((target != 0) & (target != 1)):
-            raise ValueError('Target tensor for LogisticRegression must be binary (0 or 1).')
+            return 'Target tensor for LogisticRegression must be binary (0 or 1).'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return torch.sigmoid(predictors.logit)
@@ -257,24 +261,22 @@ def DirichletRegression(
 
             self._finalize_register_predictors()
 
-        def _guard_predictors(self, predictors: t) -> None:
+        def _guard_predictors(self, predictors: t) -> str | None:
             if torch.any(torch.stack(predictors, dim=-1) <= 0):
-                raise ValueError(
-                    'All predictors for DirichletRegression must be positive after applying the transform.'
-                )
+                return 'Predictors for DirichletRegression must be positive.'
 
-        def _guard_target(self, target: torch.Tensor) -> None:
+        def _guard_target(self, target: torch.Tensor) -> str | None:
             if not target.is_floating_point():
-                raise ValueError('Target tensor for DirichletRegression must be a floating point tensor.')
+                return 'Target tensor for DirichletRegression must be a floating point tensor.'
             if target.shape[-1] != K:
-                raise ValueError(f'Target tensor for DirichletRegression must have shape (\\*, {K}), got {target.shape}.')
+                return f'Target tensor for DirichletRegression must have shape (\\*, {K}), got {target.shape}.'
             if torch.any(target <= 0) or torch.any(target >= 1):
-                raise ValueError('Target tensor for DirichletRegression must be in the range (0, 1).')
+                return 'Target tensor for DirichletRegression must be in the range (0, 1).'
             if not torch.allclose(
                 target.sum(dim=-1), target.new_ones(target.shape[:-1]),
                 atol=1e-6, rtol=1e-6
             ):
-                raise ValueError('Target tensor for DirichletRegression must sum to 1 along the last dimension.')
+                return 'Target tensor for DirichletRegression must sum to 1 along the last dimension.'
 
         def inverse_link(self, predictors: t) -> torch.Tensor:
             alpha = torch.stack(predictors, dim=-1)
@@ -306,9 +308,9 @@ class PoissonRegression(BaseGLM):
         self._register_predictor('log_mu', Predictor(PredictorMode.SAMPLEWISE))
         self._finalize_register_predictors()
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target < 0):
-            raise ValueError('Target tensor for PoissonRegression must be non-negative.')
+            return 'Target tensor for PoissonRegression must be non-negative.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.log_mu.exp()
@@ -350,15 +352,15 @@ class NegativeBinomial(BaseGLM):
         self._register_predictor('alpha', alpha)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.mu <= 0):
-            raise ValueError('Predictor mu must be positive.')
+            return 'Predictor mu must be positive.'
         if torch.any(predictors.alpha <= 0):
-            raise ValueError('Predictor alpha must be positive.')
+            return 'Predictor alpha must be positive.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target < 0):
-            raise ValueError('Target tensor for NegativeBinomial must be non-negative.')
+            return 'Target tensor for NegativeBinomial must be non-negative.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
@@ -415,13 +417,13 @@ class StackedTruncatedNormal(BaseGLM):
         self.has_ub = torch.isfinite(self.ub).item()
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.sigma <= 0):
-            raise ValueError('Predictor sigma must be positive.')
+            return 'Predictor sigma must be positive.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target < self.lb) or torch.any(target > self.ub):
-            raise ValueError(f'Target tensor for StackedTruncatedNormal must be in the range [{self.lb.item()}, {self.ub.item()}].')
+            return f'Target tensor for StackedTruncatedNormal must be in the range [{self.lb.item()}, {self.ub.item()}].'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         mu, sigma = predictors.mu, predictors.sigma
@@ -476,16 +478,16 @@ class LogStackedTruncatedNormal(StackedTruncatedNormal):
     ):
         super().__init__(sigma, lb, ub)
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.sigma <= 0):
-            raise ValueError('Predictor sigma must be positive.')
+            return 'Predictor sigma must be positive.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target <= 0):
-            raise ValueError('Target tensor for LogStackedTruncatedNormal must be positive.')
+            return 'Target tensor for LogStackedTruncatedNormal must be positive.'
         log_target = target.log()
         if torch.any(log_target < self.lb) or torch.any(log_target > self.ub):
-            raise ValueError(f'Target tensor for LogStackedTruncatedNormal must have log-values in the range [{self.lb.item()}, {self.ub.item()}].')
+            return f'Target tensor for LogStackedTruncatedNormal must have log-values in the range [{self.lb.item()}, {self.ub.item()}].'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         mu, sigma = predictors.mu, predictors.sigma
@@ -573,17 +575,17 @@ class Tweedie(BaseGLM):
         self._register_predictor('power', power)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.mu <= 0):
-            raise ValueError('Predictor mu must be positive.')
+            return 'Predictor mu must be positive.'
         if torch.any(predictors.phi <= 0):
-            raise ValueError('Predictor phi must be positive.')
+            return 'Predictor phi must be positive.'
         if torch.any((predictors.power <= 1) | (predictors.power >= 2)):
-            raise ValueError('Predictor power must be in the range (1, 2).')
+            return 'Predictor power must be in the range (1, 2).'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target < 0):
-            raise ValueError('Target tensor for Tweedie must be non-negative.')
+            return 'Target tensor for Tweedie must be non-negative.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
@@ -635,13 +637,13 @@ class ZeroInflatedLogNormal(BaseGLM):
         if TYPE_CHECKING:
             self.const: torch.Tensor
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.sigma <= 0):
-            raise ValueError('Predictor sigma must be positive.')
+            return 'Predictor sigma must be positive.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if torch.any(target <= 0):
-            raise ValueError('Target tensor for ZeroInflatedLogNormal must be positive.')
+            return 'Target tensor for ZeroInflatedLogNormal must be positive.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
@@ -702,26 +704,22 @@ class PoissonGamma(BaseGLM):
         self._register_predictor('phi', phi)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.lambda_ <= 0):
-            raise ValueError('Predictor lambda_ must be positive.')
+            return 'Predictor lambda_ must be positive.'
         if torch.any(predictors.mu <= 0):
-            raise ValueError('Predictor mu must be positive.')
+            return 'Predictor mu must be positive.'
         if torch.any(predictors.phi <= 0):
-            raise ValueError('Predictor phi must be positive.')
+            return 'Predictor phi must be positive.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         value, count = map(lambda x: x.squeeze(-1), torch.chunk(target, 2, dim=-1))
         if torch.any(value < 0):
-            raise ValueError(
-                'Value tensor for PoissonGamma must be positive.'
-            )
+            return 'Value tensor for PoissonGamma must be positive.'
         if torch.any(count < 0):
-            raise ValueError(
-                'Count tensor for PoissonGamma must be positive.'
-            )
+            return 'Count tensor for PoissonGamma must be positive.'
         if torch.any((count == 0) & (value != 0)):
-            raise ValueError('If count == 0, aggregate value must be 0.')
+            return 'If count == 0, aggregate value must be 0.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return torch.stack([
@@ -777,14 +775,14 @@ class NegativeBinomialGamma(BaseGLM):
         self._register_predictor('alpha', alpha)
         self._finalize_register_predictors()
 
-    def _guard_predictors(self, predictors) -> None:
+    def _guard_predictors(self, predictors) -> str | None:
         for name, value in predictors._asdict().items():
             if not (value >= 0).all():
-                raise ValueError(f'Predictor {name} must be non-negative, but got min={value.min().item()}.')
+                return f'Predictor {name} must be non-negative, but got min={value.min().item()}.'
 
-    def _guard_target(self, target: torch.Tensor) -> None:
+    def _guard_target(self, target: torch.Tensor) -> str | None:
         if not (target >= 0).all():
-            raise ValueError(f'Target tensor must be non-negative, but got min={target.min().item()}.')
+            return f'Target tensor must be non-negative, but got min={target.min().item()}.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
