@@ -214,6 +214,65 @@ def add_shard_column(
         )
     return df.with_columns(shard_expr)
 
+def expand_columns(
+    df: pl.DataFrame, src_cols: str | List[str],
+    name_template: str = '{col}_{index}',
+    drop_src: bool = True
+) -> pl.DataFrame:
+    '''
+    Expand a column containing list or struct types into multiple columns with names generated from the specified template.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame.
+        src_cols (str | List[str]): The source column(s) to expand. Each column must be of list or struct type.
+        name_template (str): The template for generating new column names, where '{col}' will be replaced with the source column name and '{index}' will be replaced with the list index or struct field name.
+        drop_src (bool): Whether to drop the source columns after expansion.
+
+    Returns:
+        pl.DataFrame: The DataFrame with the expanded columns.
+    '''
+    if isinstance(src_cols, str):
+        src_cols = [src_cols]
+    if not src_cols:
+        raise ValueError('src_cols must not be empty')
+    if len(set(src_cols)) != len(src_cols):
+        raise ValueError('src_cols must not contain duplicate column names')
+    if any(col not in df.columns for col in src_cols):
+        missing = [col for col in src_cols if col not in df.columns]
+        raise ValueError(f'Source columns {missing} do not exist in DataFrame')
+
+    all_exprs = []
+    for src_col in src_cols:
+        src_dtype = df.schema[src_col]
+
+        # Convert to struct
+        expr = pl.col(src_col)
+        match src_dtype:
+            case pl.List():
+                expr = expr.list.to_struct(
+                    n_field_strategy='max_width',
+                    fields=lambda i: name_template.format(col=src_col, index=i)
+                )
+            case pl.Array():
+                expr = expr.arr.to_struct(
+                    fields=lambda i: name_template.format(col=src_col, index=i)
+                )
+            case pl.Struct() as struct:
+                fields = struct.fields
+                expr = expr.struct.rename_fields([
+                    name_template.format(col=src_col, index=f) for f in fields
+                ])
+            case _:
+                raise ValueError(f'Source column {src_col} must be of list, array or struct type to expand')
+        expr = expr.struct.unnest()
+        all_exprs.append(expr)
+
+    ret = df.with_columns(*all_exprs)
+    if drop_src:
+        ret = ret.drop(src_cols)
+    return ret
+
+
 def merge_columns(
     df: pl.DataFrame, src_cols: Sequence[str], dest_col: str,
     drop_src: bool = False, target_dtype: Type[NumericType] = pl.Float32
