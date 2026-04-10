@@ -322,7 +322,8 @@ def expand_columns(
             case pl.Struct() as struct:
                 fields = struct.fields
                 expr = expr.struct.rename_fields([
-                    name_template.format(col=src_col, index=f) for f in fields
+                    name_template.format(col=src_col, index=f.name)
+                    for f in fields
                 ])
             case _:
                 raise ValueError(f'Source column {src_col} must be of list, array or struct type to expand')
