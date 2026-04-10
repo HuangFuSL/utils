@@ -214,6 +214,67 @@ def add_shard_column(
         )
     return df.with_columns(shard_expr)
 
+def pad_list(
+    df: pl.DataFrame,
+    col: str,
+    side: Literal['left', 'right'] = 'right',
+    pad_value: Any = None,
+    max_length: int | None = None
+) -> pl.DataFrame:
+    '''
+    Pad list columns in a Polars DataFrame to a specified length with a given padding value.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame.
+        col (str): The column to perform padding.
+        side (Literal['left', 'right']): The side to pad on, either 'left' or 'right'.
+        pad_value (Any): The value to use for padding.
+        max_length (int | None): The maximum length to pad to. If None, pads to the length of the longest list in each column. If specified and less than the length of any list, those lists will be truncated.
+    '''
+    if col not in df.columns:
+        raise ValueError(f'Column {col} does not exist in DataFrame')
+    container_dtype = df.schema[col]
+    if not isinstance(container_dtype, pl.List):
+        raise ValueError(f'Column {col} must be of list type to pad')
+    df = df.with_columns(pl.col(col).fill_null([]).cast(container_dtype))
+    if side not in ['left', 'right']:
+        raise ValueError("side must be either 'left' or 'right'")
+    if max_length is not None and max_length < 0:
+        raise ValueError('max_length must be a non-negative integer')
+    if max_length is None:
+        max_length = df.select(pl.col(col).list.len().max()).item()
+    assert max_length is not None
+
+    try:
+        dtype_cls = container_dtype.inner.to_python()
+        if pad_value is not None:
+            if not isinstance(pad_value, dtype_cls):
+                # Try casting
+                pad_value_casted = dtype_cls(pad_value) # type: ignore
+            else:
+                pad_value_casted = pad_value
+        else:
+            pad_value_casted = None
+        pad_value_casted: Any
+    except Exception as e:
+        raise ValueError(f'pad_value {pad_value} cannot be cast to the inner type of the list column: {e}')
+
+    expr = pl.col(col)
+    min_length = df.select(pl.col(col).list.len().min()).item()
+    num_required = max(0, max_length - min_length)
+
+    if side == 'right':
+        expr = expr \
+            .list.concat(pl.repeat(pad_value_casted, num_required)) \
+            .list.head(max_length) \
+            .alias(col)
+    else:
+        expr = pl.repeat(pad_value_casted, num_required) \
+            .list.concat(expr) \
+            .list.tail(max_length) \
+            .alias(col)
+    return df.with_columns(expr)
+
 def expand_columns(
     df: pl.DataFrame, src_cols: str | List[str],
     name_template: str = '{col}_{index}',
