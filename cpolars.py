@@ -302,7 +302,8 @@ def expand_columns(
         missing = [col for col in src_cols if col not in df.columns]
         raise ValueError(f'Source columns {missing} do not exist in DataFrame')
 
-    all_exprs = []
+    convert_exprs = []
+    unnest_exprs = []
     for src_col in src_cols:
         src_dtype = df.schema[src_col]
 
@@ -325,10 +326,11 @@ def expand_columns(
                 ])
             case _:
                 raise ValueError(f'Source column {src_col} must be of list, array or struct type to expand')
-        expr = expr.struct.unnest()
-        all_exprs.append(expr)
 
-    ret = df.with_columns(*all_exprs)
+        convert_exprs.append(expr.alias(src_col))
+        unnest_exprs.append(pl.col(src_col).struct.unnest())
+
+    ret = df.with_columns(*convert_exprs).with_columns(*unnest_exprs)
     if drop_src:
         ret = ret.drop(src_cols)
     return ret
