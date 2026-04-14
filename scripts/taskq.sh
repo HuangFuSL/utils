@@ -359,12 +359,58 @@ show_status() {
   fi
 }
 
+handle_kill() {
+  ensure_state
+
+  local -a queued_files=("$QUEUE_DIR"/*.job)
+  local -a running_files=("$RUN_DIR"/*.job)
+  local queued="${#queued_files[@]}"
+  local running="${#running_files[@]}"
+  local reply
+  local job
+
+  local bold_red=$'\033[1;31m'
+  local reset=$'\033[0m'
+
+  if ! screen_running; then
+    printf 'Dispatcher is not running; nothing to do.\n'
+    return 0
+  fi
+
+  printf 'Trying to stop dispatcher session: %s\n' "$SESSION_NAME"
+
+  if (( running == 0 )); then
+    stop_dispatcher
+    return 0
+  fi
+
+  printf '%sWARNING: dispatcher is currently running task(s). Killing it will interrupt them immediately.%s\n' "$bold_red" "$reset"
+  printf '%sInterrupted or queued tasks will not be resumed automatically after termination.%s\n' "$bold_red" "$reset"
+  printf 'Running task(s):\n'
+  for job in "${running_files[@]}"; do
+    printf '  - %s\n' "$(extract_cmdline "$job")"
+  done
+  printf 'Queued jobs: %d\n' "$queued"
+
+  printf 'Terminate dispatcher? [y/N] '
+  if ! read -r reply; then
+    printf '\nKill cancelled\n'
+    return 1
+  fi
+
+  case "$reply" in
+    [Yy]|[Yy][Ee][Ss])
+      stop_dispatcher
+      ;;
+    *)
+      printf 'Kill cancelled\n'
+      ;;
+  esac
+}
+
 stop_dispatcher() {
   if screen_running; then
     screen -S "$SESSION_NAME" -X quit
-    printf 'dispatcher stopped: %s\n' "$SESSION_NAME"
-  else
-    printf 'dispatcher is not running\n'
   fi
 }
 
@@ -423,7 +469,7 @@ main() {
       show_status
       ;;
     --kill)
-      stop_dispatcher
+      handle_kill
       ;;
     --help|-h)
       usage
