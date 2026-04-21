@@ -3,8 +3,7 @@
 '''
 
 import polars as pl
-from typing import Sequence
-
+from typing import Literal, Sequence
 
 def add_shard_column(
     df: pl.DataFrame, num_shards: int, dest_col: str,
@@ -59,6 +58,33 @@ def add_shard_column(
         )
     return df.with_columns(shard_expr)
 
+def normalize(
+    df: pl.DataFrame, cols: Sequence[str],
+    method: Literal['min-max', 'z-score'] = 'z-score'
+) -> pl.DataFrame:
+    '''
+    Normalize specified columns in a Polars DataFrame.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame.
+        cols (Sequence[str]): The columns to normalize.
+        method (Literal['min-max', 'z-score']): The normalization method to use.
+
+    Returns:
+        pl.DataFrame: The DataFrame with normalized columns.
+    '''
+    if method == 'min-max':
+        return df.with_columns([
+            ((pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())).alias(col)
+            for col in cols
+        ])
+    elif method == 'z-score':
+        return df.with_columns([
+            ((pl.col(col) - pl.col(col).mean()) / pl.col(col).std()).alias(col)
+            for col in cols
+        ])
+    else:
+        raise ValueError("Method must be either 'min-max' or 'z-score'")
 
 def sparse_to_index(
     df: pl.DataFrame, sparse_cols: Sequence[str], starting_index: int = 1,
