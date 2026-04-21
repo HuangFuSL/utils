@@ -1,5 +1,5 @@
 '''
-`utils.dataframe` - Utilities for working with Polars DataFrames.
+`utils.cpolars.dataset` - Functions for saving and loading partitioned Parquet datasets on disk, and interfacing with Hugging Face Datasets and PyTorch DataLoaders.
 '''
 
 import json
