@@ -5,15 +5,108 @@
 import json
 import os
 import tempfile
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Literal, Sequence, Tuple, overload
 
+# On certain systems, datasets must be loaded **after** torch
+import datasets
+import numpy as np
 import polars as pl
 import torch
 from polars._typing import ParquetCompression
 
-# On certain systems, datasets must be loaded **after** torch
-import datasets
 
+from typing import Literal, overload
+import numpy as np
+import polars as pl
+import torch
+
+AnyDType = pl.DataType | torch.dtype | np.dtype
+
+
+def _normalize_dtype_name(dtype: AnyDType) -> str:
+    match dtype:
+        case torch.dtype():
+            ret = str(dtype).removeprefix('torch.')
+        case np.dtype():
+            ret = dtype.name
+        case pl.DataType():
+            base = dtype.base_type
+            ret = base.__name__.lower()
+        case _:
+            raise TypeError(f'Unsupported dtype type: {type(dtype)}')
+    # Post-process
+    match ret:
+        case 'boolean':
+            return 'bool'
+        case _ if all(_ not in ret for _ in ['int', 'float', 'bool']):
+            raise ValueError(f'Unsupported dtype: {ret}')
+    return ret
+
+@overload
+def convert_dtype(dtype: AnyDType, to: Literal['torch']) -> torch.dtype: ...
+
+@overload
+def convert_dtype(dtype: AnyDType, to: Literal['polars']) -> pl.DataType: ...
+
+@overload
+def convert_dtype(dtype: AnyDType, to: Literal['numpy']) -> np.dtype: ...
+
+def convert_dtype(
+    dtype: AnyDType,
+    to: Literal['torch', 'polars', 'numpy']
+) -> AnyDType:
+    type_name = _normalize_dtype_name(dtype)
+    match to:
+        case 'torch':
+            return getattr(torch, type_name)
+        case 'polars':
+            match type_name:
+                case 'bool':
+                    pl_name = 'Boolean'
+                case _ if type_name.startswith('u'):
+                    pl_name = 'U' + type_name[1:].capitalize()
+                case _:
+                    pl_name = type_name.capitalize()
+            return getattr(pl, pl_name)
+        case 'numpy':
+            return np.dtype(type_name)
+        case _:
+            raise ValueError(f'Unsupported target type: {to}')
+
+
+def read_tensor(path: str, col_name: str, batch_dim: int = 0) -> pl.Series:
+    '''
+    Read a PyTorch tensor from a file and return it as a Polars Series.
+
+    Args:
+        path (str): The file path to read the tensor from.
+        col_name (str): The name of the column to create in the returned Series.
+        batch_dim (int): The dimension to treat as the batch dimension when converting to a Series.
+
+
+    Returns:
+        pl.Series: A Polars Series containing the tensor data.
+    '''
+    tensor = torch.load(path, map_location='cpu', weights_only=True)
+    if not isinstance(tensor, torch.Tensor):
+        raise ValueError(f'The loaded object from {path} is not a PyTorch tensor')
+    if batch_dim < 0 or batch_dim >= tensor.ndim:
+        raise ValueError(f'batch_dim must be between 0 and {tensor.ndim - 1}, got {batch_dim}')
+    if tensor.shape[batch_dim] == 0:
+        raise ValueError(f'The batch dimension (dim {batch_dim}) of the tensor must have size greater than 0')
+    if tensor.is_floating_point() and tensor.dtype.itemsize < 4:
+        # Polars only supports float32 and float64
+        tensor = tensor.to(torch.float32)
+
+    inner_shape = list(tensor.shape)
+    inner_shape.pop(batch_dim)
+    if batch_dim != 0:
+        tensor = torch.movedim(tensor, batch_dim, 0)
+    dest_dtype = convert_dtype(tensor.dtype, 'polars')
+
+    return pl.Series(
+        col_name, tensor.numpy(), dtype=pl.Array(dest_dtype, tuple(inner_shape))
+    )
 
 
 def save_dataset(
