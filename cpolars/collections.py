@@ -8,6 +8,8 @@ from typing import Any, List, Literal, Sequence, Type
 import polars as pl
 from polars.datatypes.classes import NumericType
 
+from .helpers import AnyFrame, get_columns, get_schema
+
 
 def pad_list(
     df: pl.DataFrame,
@@ -26,7 +28,8 @@ def pad_list(
         pad_value (Any): The value to use for padding.
         max_length (int | None): The maximum length to pad to. If None, pads to the length of the longest list in each column. If specified and less than the length of any list, those lists will be truncated.
     '''
-    if col not in df.columns:
+    columns = get_columns(df)
+    if col not in columns:
         raise ValueError(f'Column {col} does not exist in DataFrame')
     container_dtype = df.schema[col]
     if not isinstance(container_dtype, pl.List):
@@ -87,20 +90,22 @@ def expand_columns(
     Returns:
         pl.DataFrame: The DataFrame with the expanded columns.
     '''
+    schema = get_schema(df)
+    columns = schema.names()
     if isinstance(src_cols, str):
         src_cols = [src_cols]
     if not src_cols:
         raise ValueError('src_cols must not be empty')
     if len(set(src_cols)) != len(src_cols):
         raise ValueError('src_cols must not contain duplicate column names')
-    if any(col not in df.columns for col in src_cols):
-        missing = [col for col in src_cols if col not in df.columns]
+    if any(col not in columns for col in src_cols):
+        missing = [col for col in src_cols if col not in columns]
         raise ValueError(f'Source columns {missing} do not exist in DataFrame')
 
     convert_exprs = []
     unnest_exprs = []
     for src_col in src_cols:
-        src_dtype = df.schema[src_col]
+        src_dtype = schema[src_col]
 
         # Convert to struct
         expr = pl.col(src_col)
@@ -133,9 +138,9 @@ def expand_columns(
 
 
 def merge_columns(
-    df: pl.DataFrame, src_cols: Sequence[str], dest_col: str,
+    df: AnyFrame, src_cols: Sequence[str], dest_col: str,
     drop_src: bool = False, target_dtype: Type[NumericType] = pl.Float32
-) -> pl.DataFrame:
+) -> AnyFrame:
     '''
     Merge specified columns in a Polars DataFrame into a single column with values concatenated in a list.
 
@@ -149,21 +154,25 @@ def merge_columns(
         pl.DataFrame: The DataFrame with merged column.
     '''
     # Check columns exist
+    schema = get_schema(df)
+    columns = schema.names()
     if not src_cols:
         raise ValueError('src_cols must not be empty')
-    if dest_col in df.columns:
+    if dest_col in columns:
         raise ValueError(
             f'Destination column {dest_col} already exists in DataFrame')
-    if not all(col in df.columns for col in src_cols):
-        missing = [col for col in src_cols if col not in df.columns]
+    if not all(col in columns for col in src_cols):
+        missing = [col for col in src_cols if col not in columns]
         raise ValueError(f'Source columns {missing} do not exist in DataFrame')
-    if not all(df.schema[col].is_numeric() for col in src_cols):
+    if not all(schema[col].is_numeric() for col in src_cols):
         raise ValueError('All source columns must be numeric')
     if not target_dtype.is_numeric():
         raise ValueError('target_dtype must be a numeric type')
 
     df = df.with_columns(
-        pl.concat_list(pl.col(src_cols).cast(target_dtype)).alias(dest_col)
+        pl.concat_list(pl.col(src_cols).cast(target_dtype)).cast(
+            pl.List(target_dtype)
+        ).alias(dest_col)
     )
     if drop_src:
         df = df.drop(src_cols)

@@ -1,29 +1,33 @@
 '''
 `utils.cpolars.preprocess` - Functions for preprocessing features.
 '''
-
-import polars as pl
 from typing import Literal, Sequence
 
+import polars as pl
+
+from .helpers import AnyFrame, get_columns, get_schema
+
+
 def add_shard_column(
-    df: pl.DataFrame, num_shards: int, dest_col: str,
+    df: AnyFrame, num_shards: int, dest_col: str,
     src_col: str | Sequence[str] | None = None, seed: int | None = None
-) -> pl.DataFrame:
+) -> AnyFrame:
     '''
     Compute and add a shard column to a Polars DataFrame for sharding data across multiple workers.
 
     Args:
-        df (pl.DataFrame): The input DataFrame.
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
         num_shards (int): The number of shards to create.
         dest_col (str): The name of the destination shard column.
         src_col (str | Sequence[str] | None): The source column(s) to use for assigning the shard. If None, a random shard is assigned.
         seed (int | None): The random seed for shard assignment.
 
     Returns:
-        pl.DataFrame: The DataFrame with the added shard column.
+        pl.DataFrame | pl.LazyFrame: The DataFrame with the added shard column.
     '''
     # Check column existance
-    if dest_col in df.columns:
+    columns = get_columns(df)
+    if dest_col in columns:
         raise ValueError(
             f'Destination column {dest_col} already exists in DataFrame'
         )
@@ -32,8 +36,8 @@ def add_shard_column(
             src_col = [src_col]
         if not src_col:
             raise ValueError('src_col must not be empty if provided')
-        if not all(col in df.columns for col in src_col):
-            missing = [col for col in src_col if col not in df.columns]
+        if not all(col in columns for col in src_col):
+            missing = [col for col in src_col if col not in columns]
             raise ValueError(
                 f'Source columns {missing} do not exist in DataFrame'
             )
@@ -59,19 +63,19 @@ def add_shard_column(
     return df.with_columns(shard_expr)
 
 def normalize(
-    df: pl.DataFrame, cols: Sequence[str],
+    df: AnyFrame, cols: Sequence[str],
     method: Literal['min-max', 'z-score'] = 'z-score'
-) -> pl.DataFrame:
+) -> AnyFrame:
     '''
     Normalize specified columns in a Polars DataFrame.
 
     Args:
-        df (pl.DataFrame): The input DataFrame.
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
         cols (Sequence[str]): The columns to normalize.
         method (Literal['min-max', 'z-score']): The normalization method to use.
 
     Returns:
-        pl.DataFrame: The DataFrame with normalized columns.
+        pl.DataFrame | pl.LazyFrame: The DataFrame with normalized columns.
     '''
     if method == 'min-max':
         return df.with_columns([
@@ -87,60 +91,74 @@ def normalize(
         raise ValueError("Method must be either 'min-max' or 'z-score'")
 
 def sparse_to_index(
-    df: pl.DataFrame, sparse_cols: Sequence[str], starting_index: int = 1,
+    df: AnyFrame, sparse_cols: Sequence[str], starting_index: int = 1,
     null_index: int | None = None
-) -> pl.DataFrame:
+) -> AnyFrame:
     '''
-    Convert specified columns in a Polars DataFrame to incremental index based on unique values in the current column. This function is in-place.
+    Convert specified columns in a Polars DataFrame to incremental index based on unique values in the current column. This function replaces the original columns. If `df` is a LazyFrame, the check for null and NaN values is skipped for performance reasons.
 
     Args:
-        df (pl.DataFrame): The input DataFrame.
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
         sparse_cols (Sequence[str]): The columns to convert.
         starting_index (int): The starting index for the conversion.
         null_index (int | None): The index to assign to null values. If None, null values will raise an error.
 
     Returns:
-        pl.DataFrame: The DataFrame with specified columns converted to sparse representation.
+        pl.DataFrame | pl.LazyFrame: The DataFrame with specified columns converted to sparse representation.
     '''
+    columns = get_columns(df)
     if null_index is not None and null_index >= starting_index:
         raise ValueError(
             f'null_index {null_index} must be less than starting_index {starting_index}'
         )
-    if any(col not in df.columns for col in sparse_cols):
-        missing = [col for col in sparse_cols if col not in df.columns]
+    if any(col not in columns for col in sparse_cols):
+        missing = [col for col in sparse_cols if col not in columns]
         raise ValueError(f'Sparse columns {missing} do not exist in DataFrame')
-    if any(f'{col}_index' in df.columns for col in sparse_cols):
-        existing = [col for col in sparse_cols if f'{col}_index' in df.columns]
+    if any(f'__sparse_to_index_{col}__' in columns for col in sparse_cols):
+        existing = [
+            col for col in sparse_cols
+            if f'__sparse_to_index_{col}__' in columns
+        ]
         raise ValueError(
-            f'Destination columns {[f"{col}_index" for col in existing]} already exist in DataFrame'
+            f'Destination columns {[f"__sparse_to_index_{col}__" for col in existing]} already exist in DataFrame'
         )
 
     for col in sparse_cols:
         # Null and NaN check
-        if null_index is None and df.select(pl.col(col).is_null().any()).item():
-            raise ValueError(f'Column {col} contains null values')
+        # To guarantee performance, check is skipped for LazyFrames
+        if isinstance(df, pl.DataFrame):
+            if null_index is None:
+                nulls = df.select(pl.col(col).is_null().any())
+                if nulls.item():
+                    raise ValueError(f'Column {col} contains null values')
 
-        dtype = df.schema[col]
-        if dtype == pl.Float32 or dtype == pl.Float64:
-            if df.select(pl.col(col).is_nan().any()).item():
-                raise ValueError(f'Column {col} contains NaN values')
+            dtype = df.schema[col]
+            if dtype == pl.Float32 or dtype == pl.Float64:
+                nans = df.select(pl.col(col).is_nan().any())
+                if nans.item():
+                    raise ValueError(f'Column {col} contains NaN values')
         # Create mapping
         mapping = df \
             .select(pl.col(col)) \
             .filter(pl.col(col).is_not_null()) \
             .unique() \
             .sort(col) \
-            .with_row_index(f'{col}_index', offset=starting_index) \
+            .with_row_index(
+                f'__sparse_to_index_{col}__', offset=starting_index
+            ) \
             .with_columns(**{
-                f'{col}_index': pl.col(f'{col}_index').cast(pl.Int64)
+                f'__sparse_to_index_{col}__': \
+                    pl.col(f'__sparse_to_index_{col}__').cast(pl.Int64)
             })
-        df = df.join(mapping, on=col, how='left')
+        df = df.join(mapping, on=col, how='left') # type: ignore
         if null_index is not None:
-            df = df.with_columns(pl.col(f'{col}_index').fill_null(null_index))
+            df = df.with_columns(
+                pl.col(f'__sparse_to_index_{col}__').fill_null(null_index)
+            )
 
     df = df \
         .drop(sparse_cols) \
         .rename({
-            f'{col}_index': col for col in sparse_cols
+            f'__sparse_to_index_{col}__': col for col in sparse_cols
         })
     return df
