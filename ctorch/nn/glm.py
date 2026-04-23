@@ -684,6 +684,81 @@ class Tweedie(BaseGLM):
 
         return nll
 
+
+class TweedieExact(Tweedie):
+    '''
+    Implements Tweedie mean prediction and exact sample-wise Tweedie loss.
+
+    This module assumes the most common Tweedie regime:
+
+    .. math::
+        1 < p < 2
+
+    with log link or softplus link for the mean function and variance function:
+
+    .. math::
+        \\mathrm{Var}(Y) = \\phi \\mu^p
+
+    Notes:
+        - ``forward`` returns the predicted mean :math:`\\mu`.
+        - ``loss`` returns the sample-wise Tweedie loss without reduction.
+
+    Args:
+        phi (Predictor): The dispersion parameter.
+        power (Predictor): The power parameter. Should be in the range (1, 2).
+
+    Shapes:
+        * Input shape: (\\*, in_features).
+        * Output shape: (\\*)
+    '''
+    def __init__(
+        self, mu_transform: Transform, phi: Predictor, power: Predictor,
+        n_terms: int = 100
+    ):
+        super().__init__(mu_transform, phi, power)
+        if n_terms <= 0:
+            raise ValueError(f'n_terms must be a positive integer, got n_terms={n_terms}.')
+        self.n_terms = n_terms
+
+
+    def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
+        mu, phi, p = predictors.mu, predictors.phi, predictors.power
+        lambda_ = mu.pow(2.0 - p) / (phi * (2.0 - p))
+        alpha = (2.0 - p) / (p - 1.0)
+        theta = phi * (p - 1.0) * mu.pow(p - 1.0)
+        nll = torch.empty_like(target)
+
+        zero_mask = (target == 0)
+        nll[zero_mask] = lambda_[zero_mask]
+
+        pos_mask = (target > 0)
+        y_pos = target[pos_mask]
+        lambda_pos = lambda_[pos_mask]
+        theta_pos = theta[pos_mask]
+        alpha_pos = alpha[pos_mask]
+
+        n = torch.arange(
+            1, self.n_terms + 1,
+            device=target.device,
+            dtype=target.dtype,
+        )
+        na = torch.einsum('...,n->...n', alpha_pos, n)
+
+        log_terms = (
+            torch.einsum('...,n->...n', lambda_pos.log(), n)
+            - torch.lgamma(n + 1).expand_as(na)
+            + torch.einsum('...,...n->...n', y_pos.log(), na - 1.0)
+            - torch.lgamma(na)
+            - torch.einsum('...,...n->...n', theta_pos.log(), na)
+        )
+        nll[pos_mask] = (
+            lambda_pos
+            + y_pos / theta_pos
+            - torch.logsumexp(log_terms, dim=-1)
+        )
+
+        return nll
+
 class ZeroInflatedLogNormal(BaseGLM):
     '''
     Implements a zero-inflated log-normal distribution layer. A zero-inflated log-normal distribution is a mixture of a point mass at zero and a log-normal distribution.
