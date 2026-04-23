@@ -110,6 +110,10 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         predictor_list = list(torch.unbind(self.fc(input), dim=-1))
         return self.inverse_link(self.to_predictors(predictor_list))
 
+    def sample_forward(self, input: torch.Tensor) -> torch.Tensor:
+        predictor_list = list(torch.unbind(self.fc(input), dim=-1))
+        return self.sample(self.to_predictors(predictor_list))
+
     def loss(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self._debug:
             msg = self._guard_target(target)
@@ -165,6 +169,18 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         '''
         pass
 
+    def sample(self, input: T) -> torch.Tensor:
+        '''
+        Forward pass to compute a sample from the predicted distribution given the transformed predictors.
+
+        Args:
+            input (T): A named tuple containing the transformed predictors.
+
+        Returns:
+            torch.Tensor: A sample drawn from the predicted distribution, of shape (\\*,).
+        '''
+        raise NotImplementedError('Sampling is not implemented for this GLM.')
+
     @abc.abstractmethod
     def negative_log_likelihood(self, predictors: T, target: torch.Tensor) -> torch.Tensor:
         '''
@@ -186,18 +202,35 @@ class LinearRegression(BaseGLM):
     '''
     predictor_tuple_type = NamedTuple('LinearRegressionPredictors', [
         ('mu', torch.Tensor),
+        ('sigma', torch.Tensor),
     ])
 
-    def __init__(self):
+    def __init__(self, sigma: int | float | Predictor = 1):
         super().__init__()
         self._register_predictor('mu', Predictor(PredictorMode.SAMPLEWISE))
+        if not isinstance(sigma, Predictor):
+            sigma = Predictor(PredictorMode.GLOBAL_FIXED, float(sigma))
+        self._register_predictor('sigma', sigma)
         self._finalize_register_predictors()
+
+    def _guard_predictors(self, predictors) -> str | None:
+        if torch.any(predictors.sigma <= 0):
+            return 'Predictor sigma must be positive.'
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
 
+    def sample(self, predictors) -> torch.Tensor:
+        return predictors.mu + \
+            predictors.sigma * torch.randn_like(
+                predictors.mu, device=predictors.mu.device
+            )
+
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
-        return 0.5 * (predictors.mu - target).pow(2)
+        return 0.5 * (
+            torch.log(predictors.sigma.pow(2)) +
+            (target - predictors.mu).pow(2) / predictors.sigma.pow(2)
+        )
 
 
 class LogisticRegression(BaseGLM):
@@ -221,6 +254,11 @@ class LogisticRegression(BaseGLM):
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return torch.sigmoid(predictors.logit)
+
+    def sample(self, predictors) -> torch.Tensor:
+        return (torch.rand_like(
+            predictors.logit, device=predictors.logit.device
+        ) < torch.sigmoid(predictors.logit)).float()
 
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         return torch.nn.functional.binary_cross_entropy_with_logits(
@@ -282,6 +320,11 @@ def DirichletRegression(
             alpha = torch.stack(predictors, dim=-1)
             return alpha / alpha.sum(dim=-1, keepdim=True)
 
+        def sample(self, predictors: t) -> torch.Tensor:
+            alpha = torch.stack(predictors, dim=-1)
+            gamma_samples = torch.distributions.Gamma(alpha, 1).sample()
+            return gamma_samples / gamma_samples.sum(dim=-1, keepdim=True)
+
         def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
             alpha = torch.stack(predictors, dim=-1)
             return -(
@@ -314,6 +357,9 @@ class PoissonRegression(BaseGLM):
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.log_mu.exp()
+
+    def sample(self, predictors) -> torch.Tensor:
+        return torch.poisson(predictors.log_mu.exp())
 
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         return predictors.log_mu.exp() - target * predictors.log_mu + torch.lgamma(target + 1)
@@ -364,6 +410,11 @@ class NegativeBinomial(BaseGLM):
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
+
+    def sample(self, predictors) -> torch.Tensor:
+        mu, alpha = predictors.mu, predictors.alpha
+        p = mu / (mu + alpha)
+        return torch.distributions.NegativeBinomial(alpha, p).sample()
 
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         log_mu, log_alpha = predictors.mu.log(), predictors.alpha.log()
@@ -442,6 +493,12 @@ class StackedTruncatedNormal(BaseGLM):
 
         return ret
 
+    def sample(self, predictors) -> torch.Tensor:
+        # Sample then clamp
+        mu, sigma = predictors.mu, predictors.sigma
+        samples = mu + sigma * torch.randn_like(mu, device=mu.device)
+        return samples.clamp(self.lb, self.ub)
+
     def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
         mu, sigma = predictors.mu, predictors.sigma
 
@@ -510,6 +567,9 @@ class LogStackedTruncatedNormal(StackedTruncatedNormal):
             ret = ret + right_mean
 
         return ret
+
+    def sample(self, predictors) -> torch.Tensor:
+        return super().sample(predictors).exp()
 
     def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
         log_tgt = target.log()
@@ -590,6 +650,29 @@ class Tweedie(BaseGLM):
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
 
+    def sample(self, predictors) -> torch.Tensor:
+        mu, phi, p = predictors.mu, predictors.phi, predictors.power
+
+        lambda_ = mu.pow(2.0 - p) / (phi * (2.0 - p))
+        alpha = (2.0 - p) / (p - 1.0)
+        gamma = phi * (p - 1.0) * mu.pow(p - 1.0)
+
+        count = torch.poisson(lambda_)
+        out = lambda_.new_zeros(lambda_.shape)
+
+        mask = count > 0
+        if mask.any():
+            concentration = count[mask] * alpha[mask]
+            rate = 1.0 / gamma[mask]
+
+            gamma_dist = torch.distributions.Gamma(
+                concentration=concentration,
+                rate=rate,
+            )
+            out[mask] = gamma_dist.sample()
+
+        return out
+
     def negative_log_likelihood(self, predictors, target: torch.Tensor) -> torch.Tensor:
         mu, phi, p = predictors.mu, predictors.phi, predictors.power
 
@@ -650,6 +733,14 @@ class ZeroInflatedLogNormal(BaseGLM):
 
         prob = torch.sigmoid(logit)
         return prob * torch.exp(mu + 0.5 * sigma.pow(2))
+
+    def sample(self, predictors) -> torch.Tensor:
+        # Zero * sample from log-normal
+        logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
+        prob = torch.sigmoid(logit)
+        bern_sample = (torch.rand_like(prob) < prob).float()
+        log_normal_sample = mu + sigma * torch.randn_like(mu, device=mu.device)
+        return bern_sample * log_normal_sample.exp()
 
     def negative_log_likelihood(self, predictors, target):
         logit, mu, sigma = predictors.logit, predictors.mu, predictors.sigma
@@ -727,6 +818,25 @@ class PoissonGamma(BaseGLM):
             predictors.lambda_
         ], dim=-1)
 
+    def sample(self, predictors) -> torch.Tensor:
+        lambda_, mu, phi = predictors.lambda_, predictors.mu, predictors.phi
+        alpha, beta = 1 / phi, 1 / (phi * mu)
+
+        count = torch.poisson(lambda_)
+        value = lambda_.new_zeros(lambda_.shape)
+
+        mask = count > 0
+        if mask.any():
+            concentration = count[mask] * alpha[mask]
+            rate = beta[mask]
+            gamma_dist = torch.distributions.Gamma(
+                concentration=concentration,
+                rate=rate,
+            )
+            value[mask] = gamma_dist.sample()
+
+        return torch.stack([value, count], dim=-1)
+
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         shape = predictors.mu.shape
         value, count = map(lambda x: x.squeeze(-1), torch.chunk(target, 2, dim=-1))
@@ -786,6 +896,25 @@ class NegativeBinomialGamma(BaseGLM):
 
     def inverse_link(self, predictors) -> torch.Tensor:
         return predictors.mu
+
+    def sample(self, predictors) -> torch.Tensor:
+        mu, m, r, alpha = predictors.mu, predictors.m, \
+            predictors.r, predictors.alpha
+
+        p = m / (m + r)
+        count = torch.distributions.NegativeBinomial(r, p).sample()
+
+        mask = count > 0
+        value = mu.new_zeros(mu.shape)
+        if mask.any():
+            concentration = count[mask] * alpha[mask]
+            rate = alpha[mask] * m[mask] / mu[mask]
+            gamma_dist = torch.distributions.Gamma(
+                concentration=concentration,
+                rate=rate,
+            )
+            value[mask] = gamma_dist.sample()
+        return value
 
     def negative_log_likelihood(self, predictors, target: torch.Tensor):
         mu = predictors.mu.unsqueeze(-1)
