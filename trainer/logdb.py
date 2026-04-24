@@ -211,7 +211,7 @@ class RunRecord(BaseRecord):
     __primary_key__: ClassVar[Tuple[str, ...]] = ('id',)
     __indexes__: ClassVar[Tuple[Tuple[str, ...], ...]] = (('project',),)
     __update_fields__: ClassVar[Tuple[str, ...]] = (
-        'end_time', 'updated_at'
+        'end_time', 'updated_at', 'finished_at'
     )
 
     id: str
@@ -222,6 +222,7 @@ class RunRecord(BaseRecord):
     created_at: float
     end_time: float | None = None
     updated_at: float | None = None
+    finished_at: float | None = None
 
     @classmethod
     def new_name(cls, conn: sqlite3.Connection, project: str) -> str:
@@ -455,6 +456,7 @@ class Run():
 
         self.record.end_time = time.time()
         self.record.updated_at = time.time()
+        self.record.finished_at = time.time()
         self.record.upsert(self.conn)
         self.conn.commit()
         self.conn.close()
