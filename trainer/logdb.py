@@ -1,11 +1,12 @@
 import abc
 import dataclasses
+import itertools
 import json
-import uuid
 import sqlite3
 import time
+import uuid
 from types import UnionType
-from typing import Any, ClassVar, Dict, Tuple, Union, get_args, get_origin
+from typing import Any, Callable, ClassVar, Dict, List, Tuple, Union, get_args, get_origin
 
 NoneType = type(None)
 
@@ -280,8 +281,111 @@ class Api():
         self.conn.execute('PRAGMA journal_mode = WAL')
         self.conn.execute('PRAGMA synchronous = NORMAL')
         self.conn.execute('PRAGMA busy_timeout = 30000')
+        self.conn.row_factory = sqlite3.Row
 
-    # TODO: implement API methods for querying runs and history
+        if not RunRecord.test_table_exists(self.conn) or \
+            not HistoryRecord.test_table_exists(self.conn):
+            raise ValueError('Database tables not found. Please initialize a Run first.')
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def _ensure_open(self):
+        if self._closed:
+            raise ValueError('API is closed')
+
+    def runs(
+        self, record_filter: 'Callable[[RunRecord], bool]' = lambda x: True
+    ):
+        self._ensure_open()
+        cursor = self.conn.execute('SELECT * FROM runs')
+        for row in cursor:
+            run_record = RunRecord.from_row(row)
+            if record_filter(run_record):
+                yield run_record
+
+    def run(self, run_id: str):
+        self._ensure_open()
+        cursor = self.conn.execute('SELECT * FROM runs WHERE id=?', (run_id,))
+        row = cursor.fetchone()
+        if row is None:
+            raise ValueError(f'Run with id {run_id} not found')
+        return RunRecord.from_row(row)
+
+    def run_keys(self, run_id: str):
+        self._ensure_open()
+        cursor = self.conn.execute(
+            '''
+        SELECT DISTINCT key
+        FROM history
+        WHERE run_id=?
+        ORDER BY key ASC
+        ''',
+            (run_id,)
+        )
+        yield from (row['key'] for row in cursor)
+
+    def history(
+        self, run_id: str, keys: List[str] | str | None = None,
+        min_step: int | None = None,
+        max_step: int | None = None
+    ):
+        self._ensure_open()
+        sql = '''
+        SELECT * FROM history
+        WHERE {}
+        ORDER BY step ASC, key ASC
+        '''
+        conditions = ['run_id=?']
+        args: List[Any] = [run_id]
+        match keys:
+            case None:
+                pass
+            case str():
+                conditions.append('key=?')
+                args.append(keys)
+            case []:
+                yield from ()
+                return
+            case list():
+                conditions.append(
+                    'key IN ({})'.format(','.join('?' for _ in keys))
+                )
+                args.extend(keys)
+        if min_step is not None:
+            conditions.append('step>=?')
+            args.append(min_step)
+        if max_step is not None:
+            conditions.append('step<=?')
+            args.append(max_step)
+
+        cursor = self.conn.execute(sql.format(' AND '.join(conditions)), args)
+        yield from (HistoryRecord.from_row(row) for row in cursor)
+
+    def scan_history(
+        self, run_id: str, keys: List[str] | str | None = None,
+        min_step: int | None = None,
+        max_step: int | None = None
+    ):
+        yield from map(
+            lambda g: {obj.key: obj.value for obj in g[1]} | {'_step': g[0]},
+            itertools.groupby(
+                self.history(run_id, keys, min_step, max_step),
+                key=lambda r: r.step
+            )
+        )
+
+    def close(self):
+        if self._closed:
+            return
+
+        self.conn.close()
+        self._closed = True
+
 
 class Run():
     def __init__(
