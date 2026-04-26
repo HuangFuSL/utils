@@ -364,6 +364,51 @@ class PoissonRegression(BaseGLM):
     def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
         return predictors.log_mu.exp() - target * predictors.log_mu + torch.lgamma(target + 1)
 
+class DelayedFeedbackModel(BaseGLM):
+    '''
+    Implements the delayed feedback model proposed in `Modeling delayed feedback in display advertising`. Delayed time is assumed to follow an exponential distribution. Any 0 values are interpreted as no-conversion and any positive values are interpreted as conversion with the observed delay time.
+    '''
+    predictor_tuple_type = NamedTuple('DFMPredictors', [
+        ('logit', torch.Tensor),
+        ('lambda_', torch.Tensor),
+    ])
+
+    def __init__(
+        self, window: int | float,
+        lambda_transform: Transform = torch.nn.functional.softplus
+    ):
+        super().__init__()
+        self._register_predictor('logit', Predictor(PredictorMode.SAMPLEWISE))
+        self._register_predictor('lambda_', Predictor(
+            PredictorMode.SAMPLEWISE, raw_transform=lambda_transform
+        ))
+        self.register_buffer('window', torch.tensor(window, dtype=torch.float))
+        self._finalize_register_predictors()
+
+    def _guard_target(self, target: torch.Tensor) -> str | None:
+        if torch.any(target < 0):
+            return 'Target tensor for DFM must be non-negative.'
+
+    def inverse_link(self, predictors) -> torch.Tensor:
+        return predictors.logit.sigmoid()
+
+    def negative_log_likelihood(self, predictors, target):
+        conv_label = target > 0
+        q, lambda_ = predictors.logit.sigmoid(), predictors.lambda_
+        loss_out = target.new_zeros(target.shape)
+
+        loss_out[conv_label] = -(
+            q[conv_label].log() +
+            lambda_[conv_label].log() -
+            lambda_[conv_label] * target[conv_label]
+        )
+        loss_out[~conv_label] += -torch.log1p(
+            -q[~conv_label] * -torch.expm1(
+                -lambda_[~conv_label] * self.window
+            )
+        )
+
+        return loss_out
 
 class NegativeBinomial(BaseGLM):
     '''
