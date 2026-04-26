@@ -206,3 +206,6 @@ doc/build/latex/*
 
 # files created by taskq.sh
 .taskq/
+
+# Agent workspace
+.agent/
