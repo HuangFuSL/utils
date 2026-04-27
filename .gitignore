@@ -209,3 +209,5 @@ doc/build/latex/*
 
 # Agent workspace
 .agent/
+AGENTS.md
+opencode.json
