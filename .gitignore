@@ -208,6 +208,6 @@ doc/build/latex/*
 .taskq/
 
 # Agent workspace
-.agent/
+.agents/
 AGENTS.md
 opencode.json
