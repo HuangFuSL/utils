@@ -3,10 +3,12 @@
 '''
 
 from typing import Any, List
+from typing_extensions import deprecated
 
 import polars as pl
 
 
+@deprecated('`pl.when` supports chaining with `.when` and `.then`, so this function is no longer necessary. Use `pl.when(...).then(...).when(...).then(...).otherwise(...)` instead.')
 def chained_when(
     whens: List[pl.Expr], thens: List[pl.Expr | Any],
     else_: pl.Expr | Any
