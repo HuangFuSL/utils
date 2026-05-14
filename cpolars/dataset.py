@@ -7,6 +7,7 @@ import os
 import pathlib
 import tempfile
 from typing import Any, Dict, List, Literal, Sequence, overload
+from urllib.parse import unquote
 import warnings
 
 # On certain systems, datasets must be loaded **after** torch
@@ -115,7 +116,7 @@ def save_dataset(
     name_template: str = '{i}.parquet',
     split: str = 'full',
     compression: ParquetCompression = 'zstd',
-    data_cols: Sequence[str] = ('features', 'label'),
+    data_cols: Sequence[str] | None = None,
     pack_sequence: Sequence[str] | None = None,
     partition_cols: Sequence[str] | None = None,
     sub_splits: pl.Expr | Dict[str, pl.Expr] | None = None,
@@ -130,7 +131,7 @@ def save_dataset(
         name_template (str): The template for naming Parquet files. Must include '{i}' for the file index.
         split (str): The dataset split name (e.g., 'train', 'val', 'test').
         compression (ParquetCompression): The compression algorithm to use for Parquet files.
-        data_cols (Sequence[str]): The columns to include as data in the dataset, by default ('features', 'label').
+        data_cols (Sequence[str] | None): The columns to include as data in the dataset. If None, defaults to all columns except partition_cols.
         pack_sequence (Sequence[str] | None): The columns to pack as variable-length sequences. Must be a subset of data_cols. If None, no packing is done.
         partition_cols (Sequence[str] | None): The columns to partition the dataset by. If None, no partitioning is done.
         sub_splits (pl.Expr | Dict[str, pl.Expr] | None): Logical splits defined as Polars expressions over ``partition_cols``. If a dictionary is provided, the keys are used as split prefixes.
@@ -155,10 +156,14 @@ def save_dataset(
     # Sanity checks
     if not len(df):
         raise ValueError('Input DataFrame is empty')
-    if not data_cols:
-        raise ValueError('data_cols must not be empty')
-    if len(data_cols) != len(set(data_cols)):
-        raise ValueError('data_cols must be unique')
+    if data_cols is None:
+        schema = df.collect_schema()
+        data_cols = [
+            c for c in df.columns
+            if c not in (partition_cols or [])
+            and schema[c].base_type() is not pl.Struct
+            and to_python_type(schema[c]) in {'int', 'float', 'bool'}
+        ]
     schema = df.collect_schema()
     for col in data_cols:
         if schema[col].base_type() is pl.Struct:
@@ -232,13 +237,13 @@ def save_dataset(
             use_pyarrow=True,
         )
         all_files.append(str(dest_file.relative_to(root_dir)))
-    all_files_df = pl.Series('file', sorted(all_files)).to_frame()
-    parts = pl.col('file').str.strip_chars('/').str.split('/')
-    all_files_df = all_files_df.with_columns(
-        parts.list.slice(0, parts.list.len() - 1) \
-            .list.join('/') \
-            .alias('__sub_split_path')
-    )
+    all_files_df = pl.DataFrame({
+        'file': sorted(all_files),
+        '__sub_split_path': [
+            unquote('/'.join(f.strip('/').split('/')[:-1]))
+            for f in all_files
+        ]
+    })
 
     # Write config
     # Schema
