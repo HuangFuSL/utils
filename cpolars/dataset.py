@@ -6,7 +6,7 @@ import json
 import os
 import pathlib
 import tempfile
-from typing import Dict, List, Literal, Sequence, Tuple, overload
+from typing import Any, Dict, List, Literal, Sequence, overload
 import warnings
 
 # On certain systems, datasets must be loaded **after** torch
@@ -16,11 +16,6 @@ import polars as pl
 import torch
 from polars._typing import ParquetCompression
 
-
-from typing import Literal, overload
-import numpy as np
-import polars as pl
-import torch
 
 AnyDType = pl.DataType | torch.dtype | np.dtype
 
@@ -110,6 +105,10 @@ def read_tensor(path: str, col_name: str, batch_dim: int = 0) -> pl.Series:
         col_name, tensor.numpy(), dtype=pl.Array(dest_dtype, tuple(inner_shape))
     )
 
+def to_python_type(dtype: pl.DataType) -> str:
+    while dtype.is_nested():
+        dtype = dtype.inner # type: ignore
+    return dtype.to_python().__name__.lower()
 
 def save_dataset(
     df: pl.DataFrame, dest_dir: str, *,
@@ -117,8 +116,10 @@ def save_dataset(
     split: str = 'full',
     compression: ParquetCompression = 'zstd',
     data_cols: Sequence[str] = ('features', 'label'),
+    pack_sequence: Sequence[str] | None = None,
     partition_cols: Sequence[str] | None = None,
-    sub_splits: pl.Expr | Dict[str, pl.Expr] | None = None
+    sub_splits: pl.Expr | Dict[str, pl.Expr] | None = None,
+    **config_kwargs: Any
 ) -> None:
     '''
     Write a Polars DataFrame to disk as a partitioned Parquet dataset.
@@ -130,8 +131,10 @@ def save_dataset(
         split (str): The dataset split name (e.g., 'train', 'val', 'test').
         compression (ParquetCompression): The compression algorithm to use for Parquet files.
         data_cols (Sequence[str]): The columns to include as data in the dataset, by default ('features', 'label').
+        pack_sequence (Sequence[str] | None): The columns to pack as variable-length sequences. Must be a subset of data_cols. If None, no packing is done.
         partition_cols (Sequence[str] | None): The columns to partition the dataset by. If None, no partitioning is done.
         sub_splits (pl.Expr | Dict[str, pl.Expr] | None): Logical splits defined as Polars expressions over ``partition_cols``. If a dictionary is provided, the keys are used as split prefixes.
+        config_kwargs (Any): Additional keyword arguments to include in the config.json file.
     '''
     # Make dir
     if not os.path.exists(dest_dir):
@@ -142,11 +145,11 @@ def save_dataset(
 
     # Load or init config
     if not os.path.exists(os.path.join(dest_dir, 'config.json')):
-        config = {}
+        config = {**config_kwargs}
     else:
         with open(os.path.join(dest_dir, 'config.json'), 'r') as f:
-            config = json.load(f)
-    if split in config or os.listdir(split_dir):
+            config = json.load(f) | config_kwargs
+    if split in config.get('splits', []) or os.listdir(split_dir):
         raise ValueError(f'Dataset split {split} already exists in {dest_dir}')
 
     # Sanity checks
@@ -156,6 +159,12 @@ def save_dataset(
         raise ValueError('data_cols must not be empty')
     if len(data_cols) != len(set(data_cols)):
         raise ValueError('data_cols must be unique')
+    schema = df.collect_schema()
+    for col in data_cols:
+        if schema[col].base_type() is pl.Struct:
+            raise ValueError(f'pl.Struct dtype in {col!r} is not supported.')
+        if to_python_type(schema[col]) not in {'int', 'float', 'bool'}:
+            raise ValueError(f'data_col {col!r} must be of type int, float, or bool.')
     sub_split_df = None
     if partition_cols is not None:
         if len(partition_cols) != len(set(partition_cols)):
@@ -216,17 +225,13 @@ def save_dataset(
             },
         )
     else:
+        dest_file = pathlib.Path(split_dir) / name_template.format(i=0)
         df.write_parquet(
-            split_dir,
+            dest_file,
             compression=compression,
             use_pyarrow=True,
-            pyarrow_options={
-                'basename_template': name_template,
-                'file_visitor': lambda x: all_files.append(
-                    str(pathlib.Path(x.path).relative_to(root_dir))
-                )
-            },
         )
+        all_files.append(str(dest_file.relative_to(root_dir)))
     all_files_df = pl.Series('file', sorted(all_files)).to_frame()
     parts = pl.col('file').str.strip_chars('/').str.split('/')
     all_files_df = all_files_df.with_columns(
@@ -235,6 +240,15 @@ def save_dataset(
             .alias('__sub_split_path')
     )
 
+    # Write config
+    # Schema
+    schema = df.collect_schema()
+    config['schema'] = {
+        col: (to_python_type(schema[col]), col in (pack_sequence or []))
+        for col in data_cols
+    }
+    # Logical splits
+    config.setdefault('splits', {})
     if sub_split_df is not None:
         sub_split_df = sub_split_df.join(
             all_files_df, on='__sub_split_path', how='inner', validate='1:m'
@@ -249,10 +263,9 @@ def save_dataset(
             for group in sub_split_dict:
                 if group[col_name] in config:
                     warnings.warn(f'Overriding existing split {group[col_name]} in config')
-                config[group[col_name]] = group['file']
+                config['splits'][group[col_name]] = group['file']
 
-    # Write config
-    config[split] = all_files
+    config['splits'][split] = all_files
     temp = tempfile.NamedTemporaryFile('w', delete=False, dir=dest_dir)
     with temp:
         json.dump(config, temp)
@@ -265,10 +278,7 @@ class HfDataset():
     Usage:
         .. code-block:: python
 
-            dataset = HfDataset('/path/to/dataset', split='train', schema={
-                'features': (torch.float32, True),
-                'label': (torch.int64, False)
-            })
+            dataset = HfDataset('/path/to/dataset', split='train')
             dataloader = dataset.get_dataloader(batch_size=32, num_workers=4)
             for batch in dataloader:
                 features = batch['features']  # PackedSequence
@@ -277,16 +287,25 @@ class HfDataset():
     Args:
         root_dir (str): The root directory of the dataset.
         split (str): The dataset split name (e.g., 'train', 'val', 'test').
-        schema (Dict[str, Tuple[torch.dtype, bool]] | None): The schema defining the data types, and whether the first dimension is variable-length.
+        columns (Sequence[str] | None): The columns to include in the dataset. If None, all columns are included.
+        float_dtype (torch.dtype): The torch dtype to use for floating point columns, torch.float32 by default.
+        int_dtype (torch.dtype): The torch dtype to use for integer columns, torch.int64 by default.
     '''
     def __init__(
-        self, root_dir: str, split: str = 'train',
-        schema: Dict[str, Tuple[torch.dtype, bool]] | None = None
+        self, root_dir: str, split: str = 'train', *,
+        columns: Sequence[str] | None = None,
+        float_dtype: torch.dtype = torch.float32,
+        int_dtype: torch.dtype = torch.int64,
     ):
+        self.schema = None
         self.root_dir = root_dir
         self.split = split
-        self.schema = schema
-        self._dataset = self.load_dataset(streaming=False)
+        self._dataset = self.load_dataset(streaming=False, columns=columns)
+        self.dtype_map = {
+            'bool': torch.bool,
+            'int': int_dtype,
+            'float': float_dtype
+        }
 
     @property
     def columns(self) -> List[str]:
@@ -323,14 +342,16 @@ class HfDataset():
             persistent_workers=persistent_workers
         )
 
-    def load_dataset(self, streaming: bool = False):
+    def load_dataset(
+        self, streaming: bool = False, columns: Sequence[str] | None = None
+    ):
         '''
         Load a Polars DataFrame to PyTorch Dataset from a partitioned Parquet dataset on disk.
 
         Args:
             src_dir (str): The source directory to load the dataset from.
-            split (str): The dataset split name (e.g., 'train', 'val', 'test').
             streaming (bool): Whether to load the dataset in streaming mode.
+            columns (Sequence[str] | None): The columns to include in the dataset. If None, all columns are included.
 
         Returns:
             datasets.Dataset: The loaded dataset.
@@ -340,13 +361,16 @@ class HfDataset():
             raise ValueError(f'No config.json found in {self.root_dir}')
         with open(os.path.join(self.root_dir, 'config.json'), 'r') as f:
             config = json.load(f)
-        if self.split not in config:
+        if self.split not in config.get('splits', []):
             raise ValueError(f'Dataset split {self.split} not found in {self.root_dir}')
+        self.schema = config.get('schema', {})
+        if columns is not None:
+            self.schema = {k: self.schema[k] for k in columns}
 
         # Transform file paths to full paths
         config = {
-            split: [os.path.join(self.root_dir, f) for f in config[split]]
-            for split in config
+            split: [os.path.join(self.root_dir, f) for f in config['splits'][split]]
+            for split in config['splits']
         }
         dataset = datasets.load_dataset(
             'parquet', data_files=config, split=self.split, streaming=streaming
@@ -364,7 +388,6 @@ class HfDataset():
 
         Args:
             data_cols (Sequence[str]): The columns to include in the batch, by default ('features', 'label').
-            schema (Dict[str, Tuple[torch.dtype, bool]]): The schema defining the data types, and whether the first dimension is variable-length.
             return_dict (bool): Whether to return a dictionary of batched tensors. If False, returns a tuple.
 
         Returns:
@@ -378,24 +401,16 @@ class HfDataset():
             data_cols = list(self.schema.keys())
 
         collate_fn_dict = {}
-        default = (torch.float32, False)
         for field in data_cols:
-            if field in schema:
-                dtype_info = schema[field]
-                if isinstance(dtype_info, tuple):
-                    dtype, var_len = dtype_info
-                else:
-                    dtype, var_len = dtype_info, False
-            else:
-                dtype, var_len = default
+            dtype, var_len = schema[field]
+            torch_dtype = self.dtype_map[dtype]
             if not var_len:
                 collate_fn_dict[field] = (
-                    lambda x, dtype=dtype:
-                    torch.stack(x).to(dtype)
+                    lambda x, dtype=torch_dtype: torch.stack(x).to(dtype)
                 )
             else:
                 collate_fn_dict[field] = (
-                    lambda x, dtype=dtype:
+                    lambda x, dtype=torch_dtype:
                         torch.nn.utils.rnn.pack_sequence(
                             x, enforce_sorted=False
                         ).to(dtype)
