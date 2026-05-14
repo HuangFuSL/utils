@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# taskq.sh - A simple task queue dispatcher using screen sessions
+# taskq.sh - A simple task queue dispatcher (screen or nohup backend)
 set -euo pipefail
 shopt -s nullglob
 
 # check dependencies
-if ! command -v screen >/dev/null 2>&1; then
-  printf 'error: screen command not found\n' >&2
+if command -v screen >/dev/null 2>&1; then
+  readonly BACKEND=screen
+elif command -v nohup >/dev/null 2>&1; then
+  readonly BACKEND=nohup
+else
+  printf 'error: neither screen nor nohup command found\n' >&2
   exit 1
 fi
 if ! command -v readlink >/dev/null 2>&1; then
@@ -57,6 +61,7 @@ STATE_DIR="$SCRIPT_DIR/.taskq"
 QUEUE_DIR="$STATE_DIR/queue"
 RUN_DIR="$STATE_DIR/running"
 FAILED_DIR="$STATE_DIR/failed"
+PID_FILE="$STATE_DIR/dispatcher.pid"
 
 QUEUE_LOCK="$STATE_DIR/queue.lock"
 DISPATCH_LOCK="$STATE_DIR/dispatch.lock"
@@ -86,9 +91,12 @@ ensure_state() {
   [[ -f "$SEQ_FILE" ]] || printf '0\n' >"$SEQ_FILE"
 }
 
-# Check if the dispatcher screen session is running
-screen_running() {
-  screen -ls 2>/dev/null | grep -Fq ".${SESSION_NAME}"
+# Check if the dispatcher is running, regardless of backend
+dispatcher_running() {
+  local pid
+  [[ -f "$PID_FILE" ]] || return 1
+  read -r pid <"$PID_FILE" || return 1
+  kill -0 "$pid" 2>/dev/null
 }
 
 # Extract the original command line from a job file for logging purposes
@@ -249,6 +257,9 @@ dispatcher_loop() {
 
   ensure_state
 
+  printf '%s\n' "$$" >"$PID_FILE"
+  trap 'rm -f "$PID_FILE"' EXIT
+
   while :; do
     found=0
 
@@ -294,14 +305,23 @@ submit_job() {
   exec 8>"$DISPATCH_LOCK"
   flock 8
 
-  if ! screen_running; then
+  if ! dispatcher_running; then
     cleanup_stale_jobs_locked
-    (
-      exec 7>&- 8>&- 9>&-
-      exec </dev/null >/dev/null 2>&1
-      exec screen -dmS "$SESSION_NAME" \
-        bash "$SELF_PATH" --dispatcher --idle-timeout "$idle_timeout"
-    )
+    if [[ "$BACKEND" == screen ]]; then
+      (
+        exec 7>&- 8>&- 9>&-
+        exec </dev/null >/dev/null 2>&1
+        exec screen -dmS "$SESSION_NAME" \
+          bash "$SELF_PATH" --dispatcher --idle-timeout "$idle_timeout"
+      )
+    else
+      (
+        exec 7>&- 8>&- 9>&-
+        exec </dev/null >/dev/null 2>&1
+        nohup bash "$SELF_PATH" --dispatcher --idle-timeout "$idle_timeout" &
+        printf '%d\n' "$!" >"$PID_FILE"
+      )
+    fi
   fi
 
   SUBMITTED_JOB_ID="$(enqueue_job "$@")"
@@ -313,7 +333,7 @@ show_status() {
   ensure_state
 
   local is_running=false
-  if screen_running; then
+  if dispatcher_running; then
     is_running=true
   fi
 
@@ -331,7 +351,8 @@ show_status() {
   local reset=$'\033[0m'
 
   if $is_running; then
-    printf 'Dispatcher: %sRUNNING%s at (%s)\n' "$bold_green" "$reset" "$SESSION_NAME"
+    printf 'Dispatcher: %sRUNNING%s (backend: %s, pid: %s)\n' \
+      "$bold_green" "$reset" "$BACKEND" "$(cat "$PID_FILE" 2>/dev/null || printf '-')"
   else
     printf 'Dispatcher: %sSTOPPED%s\n' "$bold_red" "$reset"
   fi
@@ -372,12 +393,12 @@ handle_kill() {
   local bold_red=$'\033[1;31m'
   local reset=$'\033[0m'
 
-  if ! screen_running; then
+  if ! dispatcher_running; then
     printf 'Dispatcher is not running; nothing to do.\n'
     return 0
   fi
 
-  printf 'Trying to stop dispatcher session: %s\n' "$SESSION_NAME"
+  printf 'Trying to stop dispatcher (backend: %s)\n' "$BACKEND"
 
   if (( running == 0 )); then
     stop_dispatcher
@@ -409,9 +430,12 @@ handle_kill() {
 }
 
 stop_dispatcher() {
-  if screen_running; then
-    screen -S "$SESSION_NAME" -X quit
+  if dispatcher_running; then
+    local pid
+    read -r pid <"$PID_FILE"
+    kill "$pid" 2>/dev/null || true
   fi
+  rm -f "$PID_FILE"
 }
 
 usage() {
@@ -481,7 +505,7 @@ main() {
     *)
       submit_job "$DEFAULT_IDLE_TIMEOUT" "$@"
       printf 'queued job: %s\n' "$SUBMITTED_JOB_ID"
-      printf 'dispatcher session: %s\n' "$SESSION_NAME"
+      printf 'dispatcher backend: %s\n' "$BACKEND"
       ;;
   esac
 }
