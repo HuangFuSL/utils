@@ -156,15 +156,14 @@ def save_dataset(
     # Sanity checks
     if not len(df):
         raise ValueError('Input DataFrame is empty')
+    schema = df.collect_schema()
     if data_cols is None:
-        schema = df.collect_schema()
         data_cols = [
             c for c in df.columns
             if c not in (partition_cols or [])
             and schema[c].base_type() is not pl.Struct
             and to_python_type(schema[c]) in {'int', 'float', 'bool'}
         ]
-    schema = df.collect_schema()
     for col in data_cols:
         if schema[col].base_type() is pl.Struct:
             raise ValueError(f'pl.Struct dtype in {col!r} is not supported.')
@@ -177,6 +176,7 @@ def save_dataset(
         if set(data_cols) & set(partition_cols):
             raise ValueError('data_cols and partition_cols must be disjoint')
         if (set(data_cols) | set(partition_cols)) - set(df.columns):
+            print((set(data_cols) | set(partition_cols)) - set(df.columns))
             raise ValueError(
                 'Some data_cols or partition_cols are not in the DataFrame columns'
             )
