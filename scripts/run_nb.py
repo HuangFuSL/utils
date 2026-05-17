@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import atexit
 import dataclasses
+import datetime
 import signal
 import logging
 import multiprocessing as mp
@@ -35,10 +36,15 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument('--cwd', type=str, default=None, help='Working directory for notebook execution. Defaults to the notebook template directory.')
     parser.add_argument('-i', '--interval', type=float, default=20.0, help='Minimum interval (in seconds) between starting new notebook instances.')
     parser.add_argument('--timeout', type=int, default=None, help='Execution timeout for each notebook instance (in seconds).')
+    parser.add_argument('--record-output', dest='record_output', action='store_true', help='Record cell outputs to .stdout/.stderr files alongside each notebook instance.')
+    parser.add_argument('--record-stdout', dest='record_stdout', action='store_true', help='Record stdout to .stdout file. (default, requires --record-output)')
+    parser.add_argument('--no-record-stdout', dest='record_stdout', action='store_false', help='Do not record stdout.')
+    parser.add_argument('--record-stderr', dest='record_stderr', action='store_true', help='Record stderr to .stderr file. (default, requires --record-output)')
+    parser.add_argument('--no-record-stderr', dest='record_stderr', action='store_false', help='Do not record stderr.')
+    parser.set_defaults(record_output=False, record_stdout=True, record_stderr=True, raise_on_error=True)
     parser.add_argument('--log-level', type=str, default='INFO', help='Logging level.')
     parser.add_argument('--raise-on-error', dest='raise_on_error', action='store_true', help='Raise exceptions on notebook instance execution errors. Does not affect the main loop. (default)')
     parser.add_argument('--ignore-errors', dest='raise_on_error', action='store_false', help='Ignore notebook execution errors and continue execution of that instance. Does not affect the main loop.')
-    parser.set_defaults(raise_on_error=True)
     return parser
 
 @dataclasses.dataclass
@@ -52,6 +58,10 @@ class Config():
 
     execution_timeout: int | None = None
     raise_on_error: bool = True
+
+    record_output: bool = False
+    record_stdout: bool = True
+    record_stderr: bool = True
 
     log_level: int | str = logging.INFO
 
@@ -67,6 +77,9 @@ class Config():
             task_interval=parsed_args.interval,
             execution_timeout=parsed_args.timeout,
             raise_on_error=parsed_args.raise_on_error,
+            record_output=parsed_args.record_output,
+            record_stdout=parsed_args.record_stdout,
+            record_stderr=parsed_args.record_stderr,
             log_level=parsed_args.log_level,
         )
 
@@ -106,6 +119,10 @@ class Config():
         else:
             logging.info('Execution timeout: None (no timeout)')
         logging.info(f'Raise on error: {self.raise_on_error}')
+        logging.info(f'Record output: {self.record_output}')
+        if self.record_output:
+            logging.info(f'  Record stdout: {self.record_stdout}')
+            logging.info(f'  Record stderr: {self.record_stderr}')
 
     @property
     def script_dir(self) -> Path:
@@ -160,6 +177,53 @@ class AsyncNotebookExecutor():
             nb = nbformat.read(f, as_version=4)
         self.inject_env(nb)
 
+        _stdout_handle = None
+        _stderr_handle = None
+        if self.config.record_output:
+            stem = nb_path.stem
+            parent = nb_path.parent
+            if self.config.record_stdout:
+                _stdout_path = parent / f"{stem}.stdout"
+                _stdout_handle = _stdout_path.open('w', encoding='utf-8')
+                logging.info(f'Worker {self.index}: recording stdout to {_stdout_path}')
+            if self.config.record_stderr:
+                _stderr_path = parent / f"{stem}.stderr"
+                _stderr_handle = _stderr_path.open('w', encoding='utf-8')
+                logging.info(f'Worker {self.index}: recording stderr to {_stderr_path}')
+
+        def _write_cell_output(cell, cell_index):
+            if _stdout_handle is None and _stderr_handle is None:
+                return
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            for output in cell.outputs:
+                if output.output_type == 'stream':
+                    text = re.sub(r'\x1b\[[0-9;]*m', '', output.get('text', '')).rstrip('\n')
+                    if not text:
+                        continue
+                    name = output.get('name', '')
+                    header = f"[Cell {cell_index} @ {now}] ({name})"
+                    if name == 'stdout' and _stdout_handle is not None:
+                        _stdout_handle.write(f"{header}\n{text}\n")
+                        _stdout_handle.flush()
+                    elif name == 'stderr' and _stderr_handle is not None:
+                        _stderr_handle.write(f"{header}\n{text}\n")
+                        _stderr_handle.flush()
+                elif output.output_type == 'execute_result' and _stdout_handle is not None:
+                    text = re.sub(r'\x1b\[[0-9;]*m', '', output.get('data', {}).get('text/plain', '')).rstrip('\n')
+                    if not text:
+                        continue
+                    header = f"[Cell {cell_index} @ {now}] (result)"
+                    _stdout_handle.write(f"{header}\n{text}\n")
+                    _stdout_handle.flush()
+                elif output.output_type == 'error' and _stderr_handle is not None:
+                    tb_lines = output.get('traceback', [])
+                    text = re.sub(r'\x1b\[[0-9;]*m', '', '\n'.join(tb_lines)).rstrip('\n')
+                    if not text:
+                        continue
+                    header = f"[Cell {cell_index} @ {now}] (traceback)"
+                    _stderr_handle.write(f"{header}\n{text}\n")
+                    _stderr_handle.flush()
+
         def on_notebook_start(notebook):
             logging.info(f'Worker {self.index}: kernel started for {nb_path.name}')
             # Unregister SIGINT handler
@@ -172,6 +236,8 @@ class AsyncNotebookExecutor():
             logging.info(f'Worker {self.index}: executing cell {cell_index} in {nb_path.name}')
         def on_cell_complete(cell, cell_index):
             logging.info(f'Worker {self.index}: completed cell {cell_index} in {nb_path.name}')
+        def on_cell_executed(cell, cell_index, execute_reply):
+            _write_cell_output(cell, cell_index)
         def on_cell_error(cell, cell_index, execute_reply):
             logging.warning(f'Worker {self.index}: error in cell {cell_index} of {nb_path.name}.')
             logging.warning(f'Worker {self.index}: error details: {execute_reply}')
@@ -186,6 +252,7 @@ class AsyncNotebookExecutor():
             on_notebook_complete=on_notebook_complete,
             on_cell_execute=on_cell_execute,
             on_cell_complete=on_cell_complete,
+            on_cell_executed=on_cell_executed,
             on_cell_error=on_cell_error,
         )
 
@@ -197,6 +264,9 @@ class AsyncNotebookExecutor():
             logging.error(traceback.format_exc())
             raise
         finally:
+            for handle in (_stdout_handle, _stderr_handle):
+                if handle is not None:
+                    handle.close()
             with nb_path.open('w', encoding='utf-8') as f:
                 nbformat.write(nb, f)
 
