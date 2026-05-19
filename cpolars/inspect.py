@@ -134,6 +134,56 @@ f'''
 \\end{{tabular}}
 '''.strip()
 
+def from_markdown(
+    table: str,
+    *,
+    schema_overrides: Dict[str, pl.DataType] | None = None,
+    try_unsigned: bool = True,
+):
+    '''
+    Convert a Markdown-formatted table string back into a Polars DataFrame.
+
+    Args:
+        table (str): The input Markdown-formatted table string.
+        schema_overrides (Dict[str, pl.DataType] | None): Optional dictionary to specify column data types.
+        try_unsigned (bool): Whether to attempt parsing integer columns as unsigned types before signed types.
+    Returns:
+        pl.DataFrame: A DataFrame constructed from the Markdown table.
+    '''
+    _SENTINEL = '\x00PIPE\x00'
+    rows = [
+        line.strip().strip('|').replace('\\|', _SENTINEL).split('|')
+        for line in table.strip().splitlines()
+    ]
+    schema_overrides = schema_overrides or {}
+    header, _, *data_rows = rows
+    header = [h.strip().replace(_SENTINEL, '|') for h in header]
+    df = pl.DataFrame(
+        data_rows, schema={
+            col: pl.String for col in header
+        }, orient='row'
+    ).with_columns(*[
+        pl.col(c)
+            .str.replace_all(_SENTINEL, '|', literal=True)
+            .str.strip_chars().alias(c)
+        for c in header
+    ])
+    parse_seq = []
+    if try_unsigned:
+        parse_seq.extend([pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.UInt128])
+    parse_seq.extend([pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Int128])
+    parse_seq.extend([pl.Float32, pl.Float64])
+    for col in df.columns:
+        if col in schema_overrides:
+            df = df.with_columns(pl.col(col).cast(schema_overrides[col]))
+            continue
+        for dtype in parse_seq:
+            try:
+                df = df.with_columns(pl.col(col).cast(dtype))
+                break
+            except Exception:
+                continue
+    return df
 
 def to_markdown(
     df: pl.DataFrame,
