@@ -1,6 +1,7 @@
 '''
 `utils.cpolars.preprocess` - Functions for preprocessing features.
 '''
+import math
 from typing import Dict, List, Literal, Sequence, Tuple, overload
 
 import polars as pl
@@ -120,7 +121,7 @@ def cut_by(
             raise ValueError(f'Column {col} does not exist in DataFrame')
 
     return df.with_columns(*[
-        pl.lit(cutpoints[col])
+        pl.lit(pl.Series(cutpoints[col], dtype=pl.Float64))
             .sort()
             .search_sorted(pl.col(col), side=side)
             .alias(dest_col)
@@ -178,8 +179,11 @@ def width_bucketize(
 
     cut_points = {}
     if not return_cutpoints:
+        # Shift cutpoints by 1 ULP to compensate for floating-point drift
+        # in normalize's (x - min) / (max - min) vs literal k/n comparison.
+        direction = 1.0 if side == 'left' else -1.0
         cut_points = {
-            col: [_ / n_buckets for _ in range(1, n_buckets)]
+            col: [math.nextafter(k / n_buckets, direction) for k in range(1, n_buckets)]
             for col in dest_cols
         }
         df = normalize(df.with_columns(*[
@@ -242,7 +246,7 @@ def quantile_bucketize(
         cols (Sequence[str]): The columns to bucketize.
         n_buckets (int): The number of buckets to create.
         dest_cols (Sequence[str] | None): The destination column names for the bucketized columns. If None, original columns will be replaced.
-        return_cutpoints (bool): Whether to return the cutpoints used for bucketization. If `df` is LazyFrame, on both cases cutpoints requires df.collect() and may cause performance issues.
+        return_cutpoints (bool): Whether to return the cutpoints used for bucketization. If `df` is LazyFrame, cutpoints requires df.collect() and may cause performance issues.
         side (Literal['left', 'right']): The side to assign values that are exactly on the cutpoint.
 
     Returns:
@@ -256,17 +260,25 @@ def quantile_bucketize(
     if n_buckets <= 0:
         raise ValueError('n_buckets must be a positive integer')
 
-    cut_points = {}
     quantile_tie = 'lower' if side == 'left' else 'higher'
-    cut_points = df.lazy().select([
-        pl.selectors.by_name(*cols).quantile(
-            pl.arange(1, n_buckets) / n_buckets,
-            interpolation=quantile_tie
-        ).list.sort()
-    ]).collect().to_dicts()[0]
-    return cut_by(
-        df, cutpoints=cut_points, dest_cols=dest_cols, side=side
-    ), cut_points if return_cutpoints else None
+    qs = [(i + 1) / n_buckets for i in range(n_buckets - 1)]
+
+    if return_cutpoints:
+        cut_points = df.lazy().select([
+            pl.col(col).quantile(qs, interpolation=quantile_tie).alias(col)
+            for col in cols
+        ]).collect().to_dicts()[0]
+        return cut_by(
+            df, cutpoints=cut_points, dest_cols=dest_cols, side=side
+        ), cut_points
+    else:
+        return df.with_columns([
+            pl.col(col).quantile(qs, interpolation=quantile_tie)
+            .explode()
+            .search_sorted(pl.col(col), side=side)
+            .alias(dest_col)
+            for col, dest_col in zip(cols, dest_cols)
+        ]), None
 
 def sparse_to_index(
     df: AnyFrame, sparse_cols: Sequence[str], starting_index: int = 1,
