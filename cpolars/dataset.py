@@ -4,8 +4,10 @@
 
 import json
 import os
+import pathlib
 import tempfile
 from typing import Dict, List, Literal, Sequence, Tuple, overload
+import warnings
 
 # On certain systems, datasets must be loaded **after** torch
 import datasets
@@ -112,11 +114,12 @@ def read_tensor(path: str, col_name: str, batch_dim: int = 0) -> pl.Series:
 def save_dataset(
     df: pl.DataFrame, dest_dir: str, *,
     name_template: str = '{i}.parquet',
-    split: str = 'train',
+    split: str = 'full',
     compression: ParquetCompression = 'zstd',
     data_cols: Sequence[str] = ('features', 'label'),
     partition_cols: Sequence[str] | None = None,
-) -> List[str]:
+    sub_splits: pl.Expr | Dict[str, pl.Expr] | None = None
+) -> None:
     '''
     Write a Polars DataFrame to disk as a partitioned Parquet dataset.
 
@@ -128,8 +131,7 @@ def save_dataset(
         compression (ParquetCompression): The compression algorithm to use for Parquet files.
         data_cols (Sequence[str]): The columns to include as data in the dataset, by default ('features', 'label').
         partition_cols (Sequence[str] | None): The columns to partition the dataset by. If None, no partitioning is done.
-    Returns:
-        List[str]: A list of file paths to the written Parquet files.
+        sub_splits (pl.Expr | Dict[str, pl.Expr] | None): Logical splits defined as Polars expressions over ``partition_cols``. If a dictionary is provided, the keys are used as split prefixes.
     '''
     # Make dir
     if not os.path.exists(dest_dir):
@@ -148,17 +150,49 @@ def save_dataset(
         raise ValueError(f'Dataset split {split} already exists in {dest_dir}')
 
     # Sanity checks
+    if not len(df):
+        raise ValueError('Input DataFrame is empty')
     if not data_cols:
         raise ValueError('data_cols must not be empty')
     if len(data_cols) != len(set(data_cols)):
         raise ValueError('data_cols must be unique')
-    if partition_cols is not None and len(partition_cols) != len(set(partition_cols)):
-        raise ValueError('partition_cols must be unique')
-    if set(data_cols) & set(partition_cols or []):
-        raise ValueError('data_cols and partition_cols must be disjoint')
-    if (set(data_cols) | set(partition_cols or [])) - set(df.columns):
-        raise ValueError(
-            'Some data_cols or partition_cols are not in the DataFrame columns')
+    sub_split_df = None
+    if partition_cols is not None:
+        if len(partition_cols) != len(set(partition_cols)):
+            raise ValueError('partition_cols must be unique')
+        if set(data_cols) & set(partition_cols):
+            raise ValueError('data_cols and partition_cols must be disjoint')
+        if (set(data_cols) | set(partition_cols)) - set(df.columns):
+            raise ValueError(
+                'Some data_cols or partition_cols are not in the DataFrame columns'
+            )
+        if sub_splits is not None:
+            if not isinstance(sub_splits, dict):
+                sub_splits = {'': sub_splits}
+            sub_split_df = df.select(
+                [pl.col(_) for _ in partition_cols]
+            ).unique().with_columns(
+                *[
+                    pl.format(f'{col}={{{col}}}').alias(f'__path_{col}')
+                    for col in partition_cols
+                ],
+                *[
+                    pl.concat_str(pl.lit(prefix), v).alias(f'__group_{k}')
+                    for k, (prefix, v) in enumerate(sub_splits.items())
+                ],
+            ).with_columns(
+                pl.concat_str(
+                    pl.lit(split), *[
+                        f'__path_{k}' for k in partition_cols
+                    ],
+                    separator='/'
+                ).alias('__sub_split_path')
+            )
+    else:
+        if sub_splits is not None:
+            raise ValueError(
+                'sub_splits cannot be specified when partition_cols is None'
+            )
     if '{i}' not in name_template:
         raise ValueError("name_template must include '{i}' for the file index")
 
@@ -166,6 +200,8 @@ def save_dataset(
     if partition_cols is None:
         partition_cols = []
     df = df.select([pl.col(col) for col in [*data_cols, *partition_cols]])
+    all_files = []
+    root_dir = pathlib.Path(dest_dir)
     if partition_cols:
         df.write_parquet(
             split_dir,
@@ -174,6 +210,9 @@ def save_dataset(
             pyarrow_options={
                 'partition_cols': list(partition_cols),
                 'basename_template': name_template,
+                'file_visitor': lambda x: all_files.append(
+                    str(pathlib.Path(x.path).relative_to(root_dir))
+                )
             },
         )
     else:
@@ -181,25 +220,43 @@ def save_dataset(
             split_dir,
             compression=compression,
             use_pyarrow=True,
-            pyarrow_options={'basename_template': name_template},
+            pyarrow_options={
+                'basename_template': name_template,
+                'file_visitor': lambda x: all_files.append(
+                    str(pathlib.Path(x.path).relative_to(root_dir))
+                )
+            },
         )
+    all_files_df = pl.Series('file', sorted(all_files)).to_frame()
+    parts = pl.col('file').str.strip_chars('/').str.split('/')
+    all_files_df = all_files_df.with_columns(
+        parts.list.slice(0, parts.list.len() - 1) \
+            .list.join('/') \
+            .alias('__sub_split_path')
+    )
 
-    # Gather all the written files
-    file_list = []
-    for dirpath, dirnames, files in os.walk(split_dir):
-        file_list.extend([
-            os.path.relpath(os.path.join(dirpath, f), dest_dir)
-            for f in files if f.endswith('.parquet')
-        ])
-    file_list.sort()
+    if sub_split_df is not None:
+        sub_split_df = sub_split_df.join(
+            all_files_df, on='__sub_split_path', how='inner', validate='1:m'
+        )
+        for k in range(len(sub_splits or [])):
+            col_name = f'__group_{k}'
+            col = pl.col(col_name)
+            sub_split_dict = sub_split_df.group_by(col) \
+                .agg(pl.col('file').explode()) \
+                .filter(col.is_not_null()) \
+                .to_dicts()
+            for group in sub_split_dict:
+                if group[col_name] in config:
+                    warnings.warn(f'Overriding existing split {group[col_name]} in config')
+                config[group[col_name]] = group['file']
 
     # Write config
-    config[split] = file_list
+    config[split] = all_files
     temp = tempfile.NamedTemporaryFile('w', delete=False, dir=dest_dir)
     with temp:
         json.dump(config, temp)
     os.replace(temp.name, os.path.join(dest_dir, 'config.json'))
-    return file_list
 
 class HfDataset():
     '''
