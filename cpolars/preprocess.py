@@ -1,7 +1,7 @@
 '''
 `utils.cpolars.preprocess` - Functions for preprocessing features.
 '''
-from typing import Literal, Sequence
+from typing import Dict, List, Literal, Sequence, Tuple, overload
 
 import polars as pl
 
@@ -79,16 +79,194 @@ def normalize(
     '''
     if method == 'min-max':
         return df.with_columns([
-            ((pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())).alias(col)
+            ((pl.col(col) - pl.col(col).min()) / (pl.col(col).max() - pl.col(col).min())).fill_nan(0).alias(col)
             for col in cols
         ])
     elif method == 'z-score':
         return df.with_columns([
-            ((pl.col(col) - pl.col(col).mean()) / pl.col(col).std()).alias(col)
+            ((pl.col(col) - pl.col(col).mean()) / pl.col(col).std()).fill_nan(0).alias(col)
             for col in cols
         ])
     else:
         raise ValueError("Method must be either 'min-max' or 'z-score'")
+
+def cut_by(
+    df: AnyFrame, cutpoints: Dict[str, List[float | int]],
+    dest_cols: Sequence[str] | None = None,
+    side: Literal['left', 'right'] = 'right'
+) -> AnyFrame:
+    '''
+    Cut specified columns in a Polars DataFrame into buckets defined by cutpoints.
+
+    Args:
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
+        cutpoints (Dict[str, List[float | int]]): A dictionary mapping column names to their respective cutpoints.
+        cols (Sequence[str]): The columns to cut, the column must be present in both ``df`` and ``cutpoints``.
+        dest_cols (Sequence[str] | None): The destination column names for the cut columns. If None, original columns will be replaced.
+        side (Literal['left', 'right']): The side to assign values that are exactly on the cutpoint. 'left' means the value will be assigned to the left bucket, while 'right' means the value will be assigned to the right bucket.
+
+    Returns:
+        pl.DataFrame | pl.LazyFrame: The DataFrame with cut columns.
+    '''
+    col_names = list(cutpoints.keys())
+    if dest_cols is not None:
+        if len(dest_cols) != len(cutpoints):
+            raise ValueError('Length of dest_cols must match length of cols')
+    else:
+        dest_cols = list(col_names)
+    df_schema = get_schema(df)
+    for col in cutpoints:
+        if col not in df_schema:
+            raise ValueError(f'Column {col} does not exist in DataFrame')
+
+    return df.with_columns(*[
+        pl.lit(cutpoints[col])
+            .sort()
+            .search_sorted(pl.col(col), side=side)
+            .alias(dest_col)
+        for col, dest_col in zip(cutpoints, dest_cols)
+    ])
+
+
+@overload
+def width_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = False,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, None]:
+    ...
+
+
+@overload
+def width_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = True,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, Dict[str, List[float]]]:
+    ...
+
+
+def width_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = False,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, Dict[str, List[float]] | None]:
+    '''
+    Bucketize specified columns in a Polars DataFrame into equal-width buckets.
+
+    Args:
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
+        cols (Sequence[str]): The columns to bucketize.
+        n_buckets (int): The number of buckets to create.
+        dest_cols (Sequence[str] | None): The destination column names for the bucketized columns. If None, original columns will be replaced.
+        return_cutpoints (bool): Whether to return the cutpoints used for bucketization. If `df` is LazyFrame, cutpoints requires df.collect() and may cause performance issues.
+        side (Literal['left', 'right']): The side to assign values that are exactly on the cutpoint. 'left' means the value will be assigned to the left bucket, while 'right' means the value will be assigned to the right bucket.
+
+    Returns:
+        Tuple[pl.DataFrame | pl.LazyFrame, Dict[str, List[float]] | None]: The DataFrame with bucketized columns, and optionally the cutpoints used for bucketization.
+    '''
+    if dest_cols is not None:
+        if len(dest_cols) != len(cols):
+            raise ValueError('Length of dest_cols must match length of cols')
+    else:
+        dest_cols = cols
+    if n_buckets <= 0:
+        raise ValueError('n_buckets must be a positive integer')
+
+    cut_points = {}
+    if not return_cutpoints:
+        cut_points = {
+            col: [_ / n_buckets for _ in range(1, n_buckets)]
+            for col in dest_cols
+        }
+        df = normalize(df.with_columns(*[
+            pl.col(col).alias(dest_col)
+            for col, dest_col in zip(cols, dest_cols)
+        ]), cols=dest_cols, method='min-max')
+    else:
+        data_range_df = pl.collect_all([
+            df.lazy().select([
+                pl.col(col).min().alias('min'),
+                pl.col(col).max().alias('max')
+            ])
+            for col in cols
+        ])
+        data_range = [_.to_dicts()[0] for _ in data_range_df]
+        for i, col in enumerate(cols):
+            min_val, max_val = data_range[i]['min'], data_range[i]['max']
+            if min_val is None or max_val is None or min_val == max_val:
+                cut_points[col] = []
+            else:
+                cut_points[col] = [
+                    min_val + (max_val - min_val) * j / n_buckets
+                    for j in range(1, n_buckets)
+                ]
+    return cut_by(
+        df, cutpoints=cut_points, dest_cols=dest_cols, side=side
+    ), None if not return_cutpoints else cut_points
+
+@overload
+def quantile_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = False,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, None]:
+    ...
+
+
+@overload
+def quantile_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = True,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, Dict[str, List[float]]]:
+    ...
+
+
+def quantile_bucketize(
+    df: AnyFrame, cols: Sequence[str], n_buckets: int,
+    dest_cols: Sequence[str] | None = None,
+    return_cutpoints: bool = False,
+    side: Literal['left', 'right'] = 'right'
+) -> Tuple[AnyFrame, Dict[str, List[float]] | None]:
+    '''
+    Bucketize specified columns in a Polars DataFrame into quantile-based buckets.
+
+    Args:
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
+        cols (Sequence[str]): The columns to bucketize.
+        n_buckets (int): The number of buckets to create.
+        dest_cols (Sequence[str] | None): The destination column names for the bucketized columns. If None, original columns will be replaced.
+        return_cutpoints (bool): Whether to return the cutpoints used for bucketization. If `df` is LazyFrame, on both cases cutpoints requires df.collect() and may cause performance issues.
+        side (Literal['left', 'right']): The side to assign values that are exactly on the cutpoint.
+
+    Returns:
+        Tuple[pl.DataFrame | pl.LazyFrame, Dict[str, List[float]] | None]: The DataFrame with bucketized columns, and optionally the cutpoints used for bucketization.
+    '''
+    if dest_cols is not None:
+        if len(dest_cols) != len(cols):
+            raise ValueError('Length of dest_cols must match length of cols')
+    else:
+        dest_cols = cols
+    if n_buckets <= 0:
+        raise ValueError('n_buckets must be a positive integer')
+
+    cut_points = {}
+    quantile_tie = 'lower' if side == 'left' else 'higher'
+    cut_points = df.lazy().select([
+        pl.selectors.by_name(*cols).quantile(
+            pl.arange(1, n_buckets) / n_buckets,
+            interpolation=quantile_tie
+        ).list.sort()
+    ]).collect().to_dicts()[0]
+    return cut_by(
+        df, cutpoints=cut_points, dest_cols=dest_cols, side=side
+    ), cut_points if return_cutpoints else None
 
 def sparse_to_index(
     df: AnyFrame, sparse_cols: Sequence[str], starting_index: int = 1,
