@@ -63,6 +63,20 @@ def add_shard_column(
         )
     return df.with_columns(shard_expr)
 
+def box_cox(col: str, lambda_: float) -> pl.Expr:
+    '''
+    Apply Box-Cox transformation to a column.
+
+    Args:
+        col (str): The column to transform.
+    Returns:
+        pl.Expr: The Box-Cox transformed expression.
+    '''
+    if lambda_ == 0:
+        return pl.col(col).log()
+    else:
+        return (pl.col(col) ** lambda_ - 1) / lambda_
+
 def normalize(
     df: AnyFrame, cols: Sequence[str],
     method: Literal['min-max', 'z-score'] = 'z-score'
