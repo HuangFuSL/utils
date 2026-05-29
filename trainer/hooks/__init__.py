@@ -7,7 +7,8 @@ from .bootstrap import (
     InitDeviceHook,
     InitLRSchedulerHook,
     InitModelHook,
-    InitOptimizerHook
+    InitOptimizerHook,
+    RandomSeedHook,
 )
 from .ckpt import (
     LoadCheckpointHook,
@@ -45,6 +46,7 @@ __all__ = [
     'InitLRSchedulerHook',
     'InitModelHook',
     'InitOptimizerHook',
+    'RandomSeedHook',
     'LoadCheckpointHook',
     'ResumeCheckpointHook',
     'SaveCheckpointHook',

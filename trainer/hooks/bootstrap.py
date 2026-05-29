@@ -3,6 +3,48 @@ import torch
 from .. import BaseHook, LoopControl
 from ...ctorch.device import get_best_device
 
+class RandomSeedHook(BaseHook):
+    '''
+    Hook to set the random seed for reproducibility.
+
+    Args:
+        seed: The random seed to be set.
+    '''
+
+    def __init__(self, seed: int):
+        self.seed = seed
+
+    def before_stage(self) -> LoopControl | None:
+        self.parent.global_context.objects['seed'] = self.seed
+        # Random seed
+        import random
+        random.seed(self.seed)
+
+        # Numpy random seed
+        try:
+            import numpy as np
+            np.random.seed(self.seed)
+        except ImportError:
+            pass
+
+        # Polars random seed
+        try:
+            import polars as pl
+            pl.set_random_seed(self.seed)
+        except ImportError:
+            pass
+
+        # Torch random seed
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+
+        # Torch deterministic
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        if hasattr(torch, 'use_deterministic_algorithms'):
+            torch.use_deterministic_algorithms(True)
+
 class InitModelHook(BaseHook):
     '''
     Hook to initialize the model before training.
