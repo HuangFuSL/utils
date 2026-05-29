@@ -1,12 +1,13 @@
 '''
 `utils.cpolars.preprocess` - Functions for preprocessing features.
 '''
+import datetime
 import math
 from typing import Dict, List, Literal, Sequence, Tuple, overload
 
 import polars as pl
 
-from .helpers import AnyFrame, get_columns, get_schema
+from .helpers import AnyFrame, get_columns, get_schema, Expr, ensure_exprs
 
 
 def add_shard_column(
@@ -62,6 +63,105 @@ def add_shard_column(
             .alias(dest_col)
         )
     return df.with_columns(shard_expr)
+
+
+def rolling_sum(
+    df: AnyFrame,
+    group_by: Expr | Sequence[Expr],
+    by: Expr,
+    to: float | int | datetime.timedelta,
+    src_cols: Expr | Sequence[Expr],
+    dest_cols: str | Sequence[str] | None = None,
+    include_self: bool = True
+) -> AnyFrame:
+    '''
+    Perform rolling sum on specified columns in a Polars DataFrame.
+
+    Args:
+        df (pl.DataFrame | pl.LazyFrame): The input DataFrame.
+        group_by (Expr | Sequence[Expr]): The column(s) to group by.
+        by (Expr): The column to perform rolling sum by.
+        to (float | int | datetime.timedelta): The window size for rolling sum.
+        src_cols (Expr | Sequence[Expr]): The source column(s) to perform rolling sum on.
+        dest_cols (str | Sequence[str] | None): The destination column name(s) for the rolling sum result. If None, original columns will be replaced.
+        include_self (bool): Whether to include the current row in the rolling sum.
+
+    Returns:
+        pl.DataFrame | pl.LazyFrame: The DataFrame with rolling sum applied to specified columns.
+    '''
+    ldf = df
+    # Name processing
+    group_by = ensure_exprs(group_by)
+    by, = ensure_exprs(by)
+    src_cols = ensure_exprs(src_cols)
+    ldf = ldf.select(*group_by, by, *src_cols)
+    all_schema = ldf.collect_schema()
+    all_names = all_schema.names()
+    by_idx = len(group_by)
+    group_by_names, by_name, src_col_names = (
+        all_names[:by_idx], all_names[by_idx], all_names[by_idx + 1:]
+    )
+    if dest_cols is not None:
+        if isinstance(dest_cols, str):
+            dest_cols = [dest_cols]
+        if len(dest_cols) != len(src_cols):
+            raise ValueError(
+                'Length of dest_cols must match length of src_cols')
+    else:
+        dest_cols = src_col_names
+    if all_schema[by_name].is_temporal() != isinstance(to, datetime.timedelta):
+        raise ValueError(
+            'Type of "to" must match the temporal nature of "by" column'
+        )
+
+    # Cumulative sums: inclusive and exclusive per group
+    cumulative_cols = [
+        pl.col(name).cum_sum().over(group_by).alias(f'__{name}_cumsum__')
+        for name in src_col_names
+    ]
+    excumulative_cols = [
+        (pl.col(name).cum_sum().over(group_by) - pl.col(name)).alias(f'__{name}_excum__')
+        for name in src_col_names
+    ]
+    ldf_long = ldf.select(
+        *[pl.col(name) for name in group_by_names],
+        pl.col(by_name),
+        *cumulative_cols, *excumulative_cols
+    )
+    ldf_lookup = ldf_long.select(
+        *[pl.col(name) for name in group_by_names],
+        pl.col(by_name).alias('__timestamp_key__'),
+        *[
+            pl.col(f'__{name}_cumsum__').alias(f'__{name}_key__')
+            for name in src_col_names
+        ]
+    )
+    ldf_merged = ldf_long.with_columns(
+        pl.col(by_name).add(to).alias('__end_timestamp__'),
+    ).join_asof(
+        ldf_lookup,  # type: ignore
+        left_on='__end_timestamp__', right_on='__timestamp_key__',
+        by=group_by_names, strategy='backward'
+    ).with_columns(
+        *[
+            pl.when(pl.lit(to >= type(to)(0)))  # type: ignore
+            .then(
+                pl.when(pl.lit(include_self))
+                .then(pl.col(f'__{name}_key__') - pl.col(f'__{name}_excum__'))
+                .otherwise(pl.col(f'__{name}_key__') - pl.col(f'__{name}_cumsum__'))
+            )
+            .otherwise(
+                pl.when(pl.lit(include_self))
+                .then(pl.col(f'__{name}_cumsum__') - pl.col(f'__{name}_key__').fill_null(0))
+                .otherwise(pl.col(f'__{name}_excum__') - pl.col(f'__{name}_key__').fill_null(0))
+            )
+            .fill_null(0)
+            .alias(dest_col)
+            for name, dest_col in zip(src_col_names, dest_cols)
+        ]
+    ).drop(pl.selectors.starts_with('__') & pl.selectors.ends_with('__'))
+    return ldf_merged
+
 
 def box_cox(col: str, lambda_: float) -> pl.Expr:
     '''
