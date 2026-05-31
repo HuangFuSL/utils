@@ -198,6 +198,69 @@ def rolling_sum(
     return ldf_merged
 
 
+def rolling_mean(
+    df: AnyFrame,
+    group_by: Expr | Sequence[Expr],
+    by: Expr,
+    to: float | int | datetime.timedelta,
+    src_cols: Expr | Sequence[Expr],
+    dest_cols: str | Sequence[str] | None = None,
+    include_self: bool = True
+) -> AnyFrame:
+    # Input processing
+    ldf = df.lazy()  # LazyFrame has noop .lazy()
+    group_by = ensure_exprs(group_by)
+    by, = ensure_exprs(by)
+    src_cols = ensure_exprs(src_cols)
+
+    # Schema and names
+    ldf_schema = ldf.select(*group_by, by.add(to), *src_cols)
+    all_schema = ldf_schema.collect_schema()
+    all_names = all_schema.names()
+    src_col_names = all_names[len(group_by) + 1:]
+
+    # Normalize dest_cols
+    if dest_cols is not None:
+        if isinstance(dest_cols, str):
+            dest_cols = [dest_cols]
+        if len(dest_cols) != len(src_cols):
+            raise ValueError('Length of dest_cols must match length of src_cols')
+    else:
+        dest_cols = src_col_names
+
+    # Counts
+    src_cols_sum = [
+        expr.alias(f'__{name}_sum')
+        for name, expr in zip(src_col_names, src_cols)
+    ]
+    src_cols_cnt = [
+        pl.when(expr.is_not_null())
+            .then(1).otherwise(0).alias(f'__{name}_count')
+        for name, expr in zip(src_col_names, src_cols)
+    ]
+    ldf_out = rolling_sum(
+        ldf,
+        group_by=group_by, by=by, to=to,
+        src_cols=src_cols_sum + src_cols_cnt,
+        dest_cols=[
+            f'__{name}_sum__' for name in src_col_names
+        ] + [
+            f'__{name}_count__' for name in src_col_names
+        ],
+        include_self=include_self
+    ).with_columns(*[
+        (
+            pl.col(f'__{name}_sum__') /
+            pl.col(f'__{name}_count__')
+        ).fill_nan(None).alias(dest_col)
+        for name, dest_col in zip(src_col_names, dest_cols or src_col_names)
+    ]).drop(pl.selectors.starts_with('__') & pl.selectors.ends_with('__'))
+
+    if isinstance(df, pl.DataFrame):
+        return ldf_out.collect()
+    return ldf_out
+
+
 def box_cox(col: str, lambda_: float) -> pl.Expr:
     '''
     Apply Box-Cox transformation to a column.
