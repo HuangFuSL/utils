@@ -275,6 +275,19 @@ def box_cox(col: str, lambda_: float) -> pl.Expr:
     else:
         return (pl.col(col) ** lambda_ - 1) / lambda_
 
+
+def log_transform(col: str) -> pl.Expr:
+    '''
+    Apply log transformation to a column.
+
+    Args:
+        col (str): The column to transform.
+    Returns:
+        pl.Expr: The log transformed expression.
+    '''
+    return pl.col(col).abs().add(1).log() * pl.col(col).sign()
+
+
 def normalize(
     df: AnyFrame, cols: Sequence[str],
     method: Literal['min-max', 'z-score'] = 'z-score'
