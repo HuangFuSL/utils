@@ -323,7 +323,8 @@ class HfDataset():
         return self._dataset.column_names # type: ignore
 
     def get_dataloader(
-        self, batch_size: int, num_workers: int = 0,
+        self, batch_size: int, shuffle: bool | None = None,
+        num_workers: int = 0,
         pin_memory: bool = False, prefetch_factor: int | None = None,
         return_dict: bool = True
     ):
@@ -342,6 +343,7 @@ class HfDataset():
         persistent_workers = num_workers > 0
         return torch.utils.data.DataLoader(
             self._dataset, # type: ignore
+            shuffle=shuffle,
             batch_size=batch_size, collate_fn=self.get_collate_fn(return_dict),
             num_workers=num_workers, pin_memory=pin_memory, prefetch_factor=prefetch_factor,
             persistent_workers=persistent_workers
