@@ -17,6 +17,7 @@ class Module(torch.nn.Module):
         if TYPE_CHECKING:
             self._device_tracker: torch.Tensor
 
+    @torch.jit.unused
     def debug(self):
         '''
         Enable debug mode (only for custom ``ctorch.nn.Modules``).
@@ -26,6 +27,7 @@ class Module(torch.nn.Module):
             if isinstance(module, Module):
                 module.debug()
 
+    @torch.jit.unused
     def _check_non_negative(self, *args: torch.Tensor):
         '''
         Check that the given tensors contain only non-negative values.
@@ -42,6 +44,7 @@ class Module(torch.nn.Module):
             if (tensor < 0).any().item():
                 raise ValueError(f'Negative values detected in tensor #{i}.')
 
+    @torch.jit.unused
     def _check_zero_to_one(self, *args: torch.Tensor):
         '''
         Check that the given tensors contain only values in the range [0, 1].
@@ -59,6 +62,7 @@ class Module(torch.nn.Module):
             if (tensor > 1).any().item():
                 raise ValueError(f'Values outside [0, 1] detected in tensor #{i}.')
 
+    @torch.jit.unused
     def _check_tensor(
         self, *args: torch.Tensor,
         check_nan: bool = True, check_inf: bool = True,
@@ -94,6 +98,7 @@ class Module(torch.nn.Module):
                 else:
                     warnings.warn(prompt, RuntimeWarning, stacklevel=2)
 
+    @torch.jit.unused
     def _check_gradients(
         self,
         check_nan: bool = True, check_inf: bool = True,
@@ -138,6 +143,7 @@ class Module(torch.nn.Module):
         return self._device_tracker.device
 
     @property
+    @torch.jit.unused
     def num_parameters(self):
         '''
         Get the number of parameters in the module.
