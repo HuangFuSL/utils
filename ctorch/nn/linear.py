@@ -1,4 +1,3 @@
-import warnings
 from typing import Callable
 
 import torch
@@ -99,7 +98,8 @@ class DNN(Module):
         layer_type (Type[torch.nn.Module]): The type of layer to use (e.g., Linear).
         flip_gradient (bool): Whether to apply a gradient reversal layer at the beginning.
         batchnorm (bool): Whether to apply batch normalization after each linear layer.
-        bias (bool): Whether to include a bias term in the linear layers.
+        batchnorm_class (Type[torch.nn.Module]): The batch normalization class to use, default is BatchNorm1d. Can be set to BatchNorm2d or BatchNorm3d for convolutional layers, or LayerNorm and InstanceNorm for other use cases. For GroupNorms, pass it via a lambda function.
+        bias (bool): Whether to include a bias term in the linear layers. When batch normalization is used, bias is often redundant and can be set to False.
         dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
         activation (str | Activation | None): Activation function to apply after each layer.
         residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
@@ -115,6 +115,7 @@ class DNN(Module):
         layer_type: Callable[[int, int, bool], torch.nn.Module] = torch.nn.Linear,
         flip_gradient: bool = False,
         batchnorm: bool = False,
+        batchnorm_class: Callable[[int], torch.nn.Module] = torch.nn.BatchNorm1d,
         bias: bool = True,
         dropout: float | None = None,
         activation: str | Activation | None = 'relu',
@@ -130,13 +131,6 @@ class DNN(Module):
             raise ValueError('All layer dimensions must be positive integers.')
         if dropout is not None and (dropout < 0.0 or dropout > 1.0):
             raise ValueError('Dropout must be between 0.0 and 1.0.')
-        # Warning conditions
-        # 1. batchnorm and bias are both True
-        if batchnorm and bias:
-            warnings.warn(
-                'Redundant bias in linear layers when using batch normalization.',
-                RuntimeWarning
-            )
 
         in_dims, out_dims = layer_dims[:-1], layer_dims[1:]
         num_layers = len(in_dims)
@@ -155,7 +149,7 @@ class DNN(Module):
             current_layer = []
             current_layer.append(layer_type(in_dim, out_dim, bias))
             if batchnorm:
-                current_layer.append(torch.nn.BatchNorm1d(out_dim))
+                current_layer.append(batchnorm_class(out_dim))
             if not bare_last_layer or i < num_layers - 1:
                 if isinstance(activation, str):
                     current_layer.append(Activation(activation))
