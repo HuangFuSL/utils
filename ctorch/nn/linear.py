@@ -103,6 +103,7 @@ class DNN(Module):
         dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
         activation (str | Activation | None): Activation function to apply after each layer.
         residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
+        bare_last_layer (bool): Whether to remove activation and dropout after the output of the last layer, defaults to False.
 
     Shapes:
 
@@ -117,7 +118,8 @@ class DNN(Module):
         bias: bool = True,
         dropout: float | None = None,
         activation: str | Activation | None = 'relu',
-        residual: bool = False
+        residual: bool = False,
+        bare_last_layer: bool = False
     ):
         super(DNN, self).__init__()
 
@@ -137,6 +139,7 @@ class DNN(Module):
             )
 
         in_dims, out_dims = layer_dims[:-1], layer_dims[1:]
+        num_layers = len(in_dims)
         layers = []
 
         if flip_gradient:
@@ -153,12 +156,13 @@ class DNN(Module):
             current_layer.append(layer_type(in_dim, out_dim, bias))
             if batchnorm:
                 current_layer.append(torch.nn.BatchNorm1d(out_dim))
-            if isinstance(activation, str):
-                current_layer.append(Activation(activation))
-            elif isinstance(activation, Activation):
-                current_layer.append(activation)
-            if dropout is not None:
-                current_layer.append(torch.nn.Dropout(dropout))
+            if not bare_last_layer or i < num_layers - 1:
+                if isinstance(activation, str):
+                    current_layer.append(Activation(activation))
+                elif isinstance(activation, Activation):
+                    current_layer.append(activation)
+                if dropout is not None:
+                    current_layer.append(torch.nn.Dropout(dropout))
 
             layers.append(torch.nn.Sequential(*current_layer))
 
