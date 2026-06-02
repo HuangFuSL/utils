@@ -176,7 +176,6 @@ def save_dataset(
         if set(data_cols) & set(partition_cols):
             raise ValueError('data_cols and partition_cols must be disjoint')
         if (set(data_cols) | set(partition_cols)) - set(df.columns):
-            print((set(data_cols) | set(partition_cols)) - set(df.columns))
             raise ValueError(
                 'Some data_cols or partition_cols are not in the DataFrame columns'
             )
