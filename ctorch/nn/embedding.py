@@ -140,8 +140,8 @@ class FeatureEmbedding(Module):
         # Return sliced embeddings if needed
         if self.need_slice:
             embeddings = torch.cat([
-                embeddings[..., i:i + size]
-                for i, size in zip(self.offset, self.embedding_size)
+                embeddings[..., i, :size]
+                for i, size in enumerate(self.embedding_size)
             ], dim=-1)
 
         return embeddings.view(*shape, -1)
