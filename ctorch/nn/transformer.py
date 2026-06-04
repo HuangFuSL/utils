@@ -78,6 +78,19 @@ class RotaryTemporalEmbedding(Module):
         ).reshape(*t_shape, -1)
         return x_rotated
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        return args[1]
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[1]
+        if x.shape[-1] != self.embedding_dim:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected embedding dim {self.embedding_dim}, '
+                f'got {x.shape[-1]}'
+            )
+
 class SinusoidalTemporalEmbedding(Module):
     '''
     Implements sinusoidal positional embedding proposed in "Attention is All You Need".
@@ -123,6 +136,14 @@ class SinusoidalTemporalEmbedding(Module):
             torch.sin(torch.einsum('...,k->...k', t, self.scale)),
             torch.cos(torch.einsum('...,k->...k', t, self.scale)),
         ], dim=-1).view(*t.shape, self.embedding_dim)
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        t_shape = args[0]
+        if t_shape is None:
+            return None
+        return torch.Size([*t_shape, self.embedding_dim])
 
 class TransformerEncoderLayer(torch.nn.TransformerEncoderLayer):
     '''

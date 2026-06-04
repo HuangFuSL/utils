@@ -29,6 +29,11 @@ class GradientReversalLayer(Module):
             raise TypeError('Input must be a torch.Tensor.')
         return local_F.gradient_reversal(x, self.alpha)
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        return args[0]
+
 
 class FuncWrapper(Module):
     '''
@@ -89,6 +94,11 @@ class Activation(Module):
         '''
         return self.activation(x)
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        return args[0]
+
 class DNN(Module):
     '''
     A Deep Neural Network (DNN) or Multi-Layer Perceptron (MLP) module.
@@ -123,6 +133,8 @@ class DNN(Module):
         bare_last_layer: bool = False
     ):
         super(DNN, self).__init__()
+
+        self.layer_dims = layer_dims
 
         # Sanity checks
         if len(layer_dims) < 2:
@@ -180,6 +192,28 @@ class DNN(Module):
         if self.residual:
             y = y + self.res(x)
         return y
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        '''
+        Get the output shape of the DNN given input shapes.
+
+        Args:
+            *args: Shapes of the input tensors. Expected one tensor of shape (\\*, layer_dims[0]).
+        '''
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.layer_dims[-1]])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.layer_dims[0]:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.layer_dims[0]}, '
+                f'got {x.shape[-1]}'
+            )
 
 class MonotonicLinear(Module):
     '''
@@ -244,6 +278,22 @@ class MonotonicLinear(Module):
             torch.Tensor: Output tensor of shape (\\*, out_features).
         '''
         return torch.einsum('...i,ji->...j', x, self.non_neg_act(self.weight)) + self.bias
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.out_features])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.in_features}, '
+                f'got {x.shape[-1]}'
+            )
 
 class IndependentNoisyLinear(Module):
     '''
@@ -322,6 +372,22 @@ class IndependentNoisyLinear(Module):
             weight = self.weight_mu
             bias = self.bias_mu
         return torch.nn.functional.linear(x, weight, bias)
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.out_features])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.in_features}, '
+                f'got {x.shape[-1]}'
+            )
 
 class FactorizedNoisyLinear(Module):
     '''
@@ -407,6 +473,22 @@ class FactorizedNoisyLinear(Module):
             weight = self.weight_mu
             bias = self.bias_mu
         return torch.nn.functional.linear(x, weight, bias)
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.out_features])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.in_features}, '
+                f'got {x.shape[-1]}'
+            )
 
 class CholeskyTrilLinear(Module):
     '''
@@ -518,3 +600,19 @@ class CholeskyTrilLinear(Module):
                 ll = torch.tanh(ll / self.scale) * self.scale
             out[..., self.indices[0], self.indices[1]] = ll
         return out
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.out_dim, self.out_dim])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.in_features}, '
+                f'got {x.shape[-1]}'
+            )

@@ -89,6 +89,14 @@ class GaussianLinear(Module):
         cov_tril = self.linear_cov(x)
         return self.gaussian_type(mean, scale_tril=cov_tril)
 
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.in_features:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.in_features}, '
+                f'got {x.shape[-1]}'
+            )
+
     def cov(self, x: torch.Tensor) -> torch.Tensor:
         '''
         Return the covariance matrix of the target distribution.
@@ -162,6 +170,19 @@ class DDPM(Module, abc.ABC):
         self.register_buffer('beta', betas)
         self.register_buffer('alpha', 1 - betas)
         self.register_buffer('bar_alpha', torch.cumprod(self.alpha, dim=0))
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        return args[0]
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        if x.shape[-1] != self.n_dim:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {self.n_dim}, '
+                f'got {x.shape[-1]}'
+            )
 
     @abc.abstractmethod
     def forward(

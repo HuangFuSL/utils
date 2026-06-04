@@ -38,6 +38,23 @@ class DeEmbedding(Module):
         ret = torch.einsum('...d,ed->...e', x, self.embedding.weight)
         return self.softmax(ret)
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.embedding.num_embeddings])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        expected = self.embedding.embedding_dim
+        if x.shape[-1] != expected:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected input dim {expected}, '
+                f'got {x.shape[-1]}'
+            )
+
 class FeatureEmbedding(Module):
     '''
     An embedding layer for encoding N multiple categorical features.
@@ -146,6 +163,23 @@ class FeatureEmbedding(Module):
 
         return embeddings.view(*shape, -1)
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.total_embedding_size])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        expected = len(self.num_features)
+        if x.shape[-1] != expected:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected {expected} features, '
+                f'got {x.shape[-1]}'
+            )
+
 class SelfAttentionEmbedding(Module):
     '''
     An embedding layer for encoding N multiple categorical features. The module uses self-attention to perform cross-feature interaction.
@@ -247,3 +281,20 @@ class SelfAttentionEmbedding(Module):
         )
         sa_embedding = torch.einsum('...qk,...ke->...qe', sa_weights, v)
         return torch.cat([qk, sa_embedding], dim=-1).reshape(*shape, -1)
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], self.total_embedding_size])
+
+    def guard_input_shape(self, *args, **kwargs):
+        x = args[0]
+        expected = len(self.num_features)
+        if x.shape[-1] != expected:
+            raise ValueError(
+                f'{self.__class__.__name__}: expected {expected} features, '
+                f'got {x.shape[-1]}'
+            )

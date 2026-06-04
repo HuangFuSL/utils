@@ -66,6 +66,14 @@ class BaseGLM(Module, abc.ABC, Generic[T]):
         # Return an error message if the target tensor falls outside the expected range (e.g., negative values for count data).
         return
 
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1]])
+
     def _finalize_register_predictors(self):
         if set(self.predictor_tuple_type._fields) != set(self.global_predictors + self.samplewise_predictors):
             raise ValueError('The registered predictors do not match the predictor tuple type fields.')
@@ -298,6 +306,14 @@ def DirichletRegression(
                 ))
 
             self._finalize_register_predictors()
+
+        def output_shape(
+            self, *args: torch.Size | None, **kwargs: torch.Size | None
+        ) -> torch.Size | None:
+            x_shape = args[0]
+            if x_shape is None:
+                return None
+            return torch.Size([*x_shape[:-1], K])
 
         def _guard_predictors(self, predictors: t) -> str | None:
             if torch.any(torch.stack(predictors, dim=-1) <= 0):
@@ -914,6 +930,14 @@ class PoissonGamma(BaseGLM):
         ))
         self._register_predictor('phi', phi)
         self._finalize_register_predictors()
+
+    def output_shape(
+        self, *args: torch.Size | None, **kwargs: torch.Size | None
+    ) -> torch.Size | None:
+        x_shape = args[0]
+        if x_shape is None:
+            return None
+        return torch.Size([*x_shape[:-1], 2])
 
     def _guard_predictors(self, predictors) -> str | None:
         if torch.any(predictors.lambda_ <= 0):
