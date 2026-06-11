@@ -1,0 +1,19 @@
+[package]
+name = "lmdb_ps"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+heed = "0.20"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "lmdb_ps"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
