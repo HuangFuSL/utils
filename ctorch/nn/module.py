@@ -1,5 +1,5 @@
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Generator, Mapping, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Generator, List, Mapping, Sequence, Tuple
 
 import torch
 
@@ -145,6 +145,84 @@ class Module(torch.nn.Module):
         ])
         if err_msg:
             raise ValueError(f'Output shape check failed on output of {self.__class__.__name__}:\n{err_msg}')
+
+    @torch.jit.unused
+    def summary(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        '''
+        Get a summary of the module, including the number of parameters, and the output shape given input shapes.
+
+        Args:
+            *args (torch.Tensor): Input tensors.
+            **kwargs (torch.Tensor): Any additional input tensors.
+
+        Returns:
+            List[Dict[str, Any]]: A list of records for each module in the hierarchy, in [{
+                name, type, num_parameters, input_args_shape, input_kwargs_shape, output_shape
+            }]
+        '''
+        records = []
+        def pre_hook(module, input_args, input_kwargs):
+            record = {
+                'id': len(records),
+                'type': module.__class__.__name__,
+                'num_parameters': sum(
+                    p.numel()
+                    for p in module.parameters(recurse=False)
+                ),
+                'num_trainable_parameters': sum(
+                    p.numel()
+                    for p in module.parameters(recurse=False) if p.requires_grad
+                ),
+                'input_args_shape': [_shape_of(arg) for arg in input_args],
+                'input_kwargs_shape': {k: _shape_of(v) for k, v in input_kwargs.items()},
+            }
+
+            # Special handling for MultiheadAttention to include out_proj parameters in the count
+            if isinstance(module, torch.nn.MultiheadAttention):
+                out_proj = getattr(module, 'out_proj', None)
+                if out_proj is not None:
+                    record['num_parameters'] += sum(
+                        p.numel() for p in out_proj.parameters()
+                    )
+                    record['num_trainable_parameters'] += sum(
+                        p.numel()
+                        for p in out_proj.parameters() if p.requires_grad
+                    )
+
+            records.append(record)
+            if hasattr(module, '_stack'):
+                module._stack.append(records[-1]['id']) # type: ignore
+            else:
+                module._stack = [records[-1]['id']]  # type: ignore
+            if hasattr(module, '_summary'):
+                module._summary[records[-1]['id']] = records[-1] # type: ignore
+            else:
+                module._summary = {records[-1]['id']: records[-1]}  # type: ignore
+        def post_hook(module, input_args, input_kwargs, output_obj):
+            if hasattr(module, '_stack'):
+                id_ = module._stack.pop()
+                record = module._summary.get(id_)
+                if record is not None:
+                    record['output_shape'] = _shape_of(output_obj)
+        handles = []
+        for module in self.modules():
+            handles.append(module.register_forward_pre_hook(pre_hook, with_kwargs=True))
+            handles.append(module.register_forward_hook(post_hook, with_kwargs=True))
+        try:
+            self(*args, **kwargs)
+        except Exception as e:
+            warnings.warn(f'Error occurred during forward pass: {e}', RuntimeWarning, stacklevel=2)
+        for name, module in self.named_modules():
+            if not hasattr(module, '_summary'):
+                continue
+            for k, v in module._summary.items(): # type: ignore
+                records[k]['name'] = name
+            del module._summary
+            if hasattr(module, '_stack'):
+                del module._stack
+        for handle in handles:
+            handle.remove()
+        return sorted(records, key=lambda r: r['id'])
 
     @torch.jit.unused
     def debug(self):
