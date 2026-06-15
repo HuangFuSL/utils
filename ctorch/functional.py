@@ -2,6 +2,7 @@
 `utils.ctorch.functional` - Functional utilities for PyTorch tensors.
 '''
 import math
+from typing import Callable, Tuple
 
 import torch
 import torch.linalg
@@ -202,6 +203,28 @@ def gradient_reversal(
     '''
     return ops.GradientReversalOp.apply(x, alpha)
 
+def linear_kernel(
+    x: torch.Tensor, y: torch.Tensor | None = None,
+):
+    '''
+    Compute the linear kernel between two sets of tensors.
+
+    A linear kernel is given by:
+
+    .. math::
+        K(x, y) = x^T y
+
+    Args:
+        x (torch.Tensor): First tensor, shape (M, D).
+        y (torch.Tensor | None): Second tensor, shape (N, D), defaults to x.
+
+    Returns:
+        torch.Tensor: Tensor containing the linear kernel values, shape (M, N).
+    '''
+    if y is None:
+        y = x
+    return torch.einsum('ik,jk->ij', x, y)
+
 def rbf_kernel(
     x: torch.Tensor, y: torch.Tensor | None = None, *,
     sigma: torch.Tensor | int | float | None = None,
@@ -276,6 +299,120 @@ def rbf_kernel(
             raise ValueError(f'Reduce tensor must have shape (K,), but got {reduce.shape}.')
         return torch.einsum('kmn,k->mn', result, reduce)
     raise ValueError(f'Reduce must be a boolean or a tensor, but got {type(reduce)}.')
+
+def modified_bessel_kn(
+    nu: int, x: torch.Tensor
+):
+    nu = abs(nu)
+
+    k0 = torch.special.modified_bessel_k0(x)
+    if nu == 0:
+        return k0
+
+    k1 = torch.special.modified_bessel_k1(x)
+    if nu == 1:
+        return k1
+
+    km1, kn = k0, k1
+    for m in range(1, nu):
+        kp1 = km1 + (2.0 * m / x) * kn
+        km1, kn = kn, kp1
+
+    return kn
+
+def matern_kernel(
+    x: torch.Tensor, y: torch.Tensor | None = None, *,
+    l: torch.Tensor | int | float = 1, n: int = 1
+) -> torch.Tensor:
+    '''
+    Compute the Matérn kernel between two sets of tensors.
+
+    The Matérn kernel is given by:
+
+    .. math::
+        K(x, y) = \\frac{2^{1-\\nu}}{\\Gamma(\\nu)} \\left( \\sqrt{2\\nu} \\frac{||x - y||}{l} \\right)^\\nu K_\\nu \\left( \\sqrt{2\\nu} \\frac{||x - y||}{l} \\right)
+
+    where :math:`K_\\nu` is the modified Bessel function of the second kind.
+
+    Args:
+        x (torch.Tensor): First tensor, shape (M, D).
+        y (torch.Tensor | None): Second tensor, shape (M, D), defaults to x.
+        l (torch.Tensor | int | float): Length scale parameter.
+        n (int): Smoothness parameter for the Matérn kernel.
+    '''
+    # Input: a, b: (num_a, num_b, num_hidden)
+    if y is None:
+        y = x
+    nu = torch.as_tensor(n).long().to(x.device)
+    l = torch.as_tensor(l).to(x.device)
+    log_l = torch.log(l)
+
+    log_a = (2 * nu).log() / 2 + torch.norm(
+        x.unsqueeze(1) - y.unsqueeze(0), dim=-1
+    ).log() - log_l
+    log_b = (1 - nu) * torch.log(x.new_tensor(2.0)) - \
+        torch.lgamma(nu) + \
+        log_a * nu + \
+        modified_bessel_kn(n, log_a.exp()).log()
+    return torch.where(log_a < -6, torch.zeros_like(log_b), log_b).exp()
+
+def periodic_kernel(
+    x: torch.Tensor,
+    y: torch.Tensor | None = None, *,
+    l: torch.Tensor | int | float = 1,
+    p: torch.Tensor | int | float = 1
+) -> torch.Tensor:
+    '''
+    Compute the periodic kernel between two sets of tensors.
+
+    The periodic kernel is given by:
+
+    .. math::
+        K(x, y) = \\exp\\left(-\\frac{2 \\sin^2(\\pi ||x - y|| / p)}{l^2}\\right)
+
+    Args:
+        x (torch.Tensor): First tensor, shape (M, D).
+        y (torch.Tensor): Second tensor, shape (N, D).
+        l (torch.Tensor | int | float): Length scale parameter.
+        p (torch.Tensor | int | float): Periodicity parameter.
+
+    Returns:
+        torch.Tensor: Tensor containing the periodic kernel values, shape (M, N).
+    '''
+    if y is None:
+        y = x
+    l = torch.as_tensor(l).to(x.device)
+    p = torch.as_tensor(p).to(x.device)
+    return torch.exp(
+        -2 * torch.sin(torch.pi * torch.norm(
+            x.unsqueeze(1) - y.unsqueeze(0),
+            dim=-1
+        ) / p) ** 2 / l ** 2
+    )
+
+def noise_kernel(
+    x: torch.Tensor, y: torch.Tensor | None = None
+) -> torch.Tensor:
+    '''
+    Compute the noise kernel between two sets of tensors.
+
+    The noise kernel is given by:
+
+    .. math::
+        K(x, y) = \\delta(x, y)
+
+    where :math:`\\delta` is the Kronecker delta function.
+
+    Args:
+        x (torch.Tensor): First tensor, shape (M, D).
+        y (torch.Tensor | None): Second tensor, shape (N, D), defaults to x.
+
+    Returns:
+        torch.Tensor: Tensor containing the noise kernel values, shape (M, N).
+    '''
+    if y is None:
+        y = x
+    return torch.all(x.unsqueeze(1) == y.unsqueeze(0), dim=-1).float()
 
 def mmd_distance(
     x: torch.Tensor, y: torch.Tensor, *,
@@ -354,3 +491,44 @@ def wasserstein_distance(
         log_v = log_b - torch.logsumexp(log_K + log_u.unsqueeze(1), dim=0)
     log_pi = log_K + log_u.unsqueeze(1) + log_v.unsqueeze(0)
     return (torch.exp(log_pi) * cost).sum().pow(1 / p)
+
+def gaussian_process(
+    x: torch.Tensor, # M, D
+    x_obs: torch.Tensor, # N, D
+    y_obs: torch.Tensor, # N,
+    kernel_func: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    '''
+    Perform Gaussian Process regression to predict the mean and covariance of the function values at the input locations `x` based on the observed data `(x_obs, y_obs)` and a specified kernel function.
+
+    Args:
+        x (torch.Tensor): Input locations where predictions are to be made, shape (M, D).
+        x_obs (torch.Tensor): Observed input locations, shape (N, D).
+        y_obs (torch.Tensor): Observed function values at `x_obs`, shape (N,).
+        kernel_func (Callable[[torch.Tensor, torch.Tensor], torch.Tensor]): Kernel function (M, D), (N, D) -> (M, N) that computes the covariance between input locations.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - mu (torch.Tensor): Predicted mean of the function values at `x`, shape (M,).
+            - sigma (torch.Tensor): Predicted covariance matrix of the function values at `x`, shape (M, M).
+    '''
+
+    if x.shape[1] != x_obs.shape[1]:
+        raise ValueError(f'Input tensors must have the same number of features, but got {x.shape[1]} and {x_obs.shape[1]}.')
+    if x_obs.shape[0] != y_obs.shape[0]:
+        raise ValueError(f'Number of observations in x_obs and y_obs must match, but got {x_obs.shape[0]} and {y_obs.shape[0]}.')
+    if y_obs.dim() > 2 or (y_obs.dim() == 2 and y_obs.shape[1] != 1):
+        raise ValueError(f'y_obs must be a vector, but got shape {y_obs.shape}.')
+    elif y_obs.dim() == 1:
+        y_obs = y_obs.unsqueeze(1)
+
+    sigma_21 = kernel_func(x, x_obs)  # (M, N)
+    sigma_22 = kernel_func(x, x)  # (M, M)
+    sigma_11 = kernel_func(x_obs, x_obs)  # (N, N)
+
+    L = torch.linalg.cholesky(sigma_11)
+    alpha = torch.cholesky_solve(y_obs, L).squeeze(-1)
+    mu = sigma_21 @ alpha
+    v = torch.linalg.solve_triangular(L, sigma_21.T, upper=False)
+    sigma = sigma_22 - v.T @ v
+    return mu, sigma
