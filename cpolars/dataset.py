@@ -332,6 +332,47 @@ class HfDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self._dataset[int(idx)]
 
+    def map(self, fn, *, batched: bool = False, batch_size: int = 1000,
+            num_proc: int | None = None, remove_columns: list[str] | None = None,
+            **kwargs):
+        '''
+        Apply a deterministic per-sample transform. Thin wrapper around
+        :meth:`datasets.Dataset.map`.
+
+        Args:
+            fn: The function to apply.
+            batched: If ``True``, ``fn`` receives a batch dict (lists). Default
+                ``False``, ``fn`` receives a single sample dict.
+            batch_size: Batch size when ``batched=True``.
+            num_proc: Number of parallel processes.
+            remove_columns: Columns to drop after transform.
+            **kwargs: Forwarded to :meth:`datasets.Dataset.map`.
+
+        Returns:
+            HfDataset: ``self``, for method chaining.
+        '''
+        self._dataset = self._dataset.map(
+            fn, batched=batched, batch_size=batch_size,
+            num_proc=num_proc, remove_columns=remove_columns, **kwargs
+        )
+        return self
+
+    def filter(self, fn, *, num_proc: int | None = None, **kwargs):
+        '''
+        Apply a deterministic filter. Thin wrapper around
+        :meth:`datasets.Dataset.filter`.
+
+        Args:
+            fn: Predicate returning ``True`` to keep, ``False`` to drop.
+            num_proc: Number of parallel processes.
+            **kwargs: Forwarded to :meth:`datasets.Dataset.filter`.
+
+        Returns:
+            HfDataset: ``self``, for method chaining.
+        '''
+        self._dataset = self._dataset.filter(fn, num_proc=num_proc, **kwargs)
+        return self
+
     def get_dataloader(
         self, batch_size: int, shuffle: bool | None = None,
         num_workers: int = 0,
