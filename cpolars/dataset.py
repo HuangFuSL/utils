@@ -336,24 +336,48 @@ class HfDataset(torch.utils.data.Dataset):
         self, batch_size: int, shuffle: bool | None = None,
         num_workers: int = 0,
         pin_memory: bool = False, prefetch_factor: int | None = None,
-        return_dict: bool = True
+        return_dict: bool = True,
+        *,
+        sampler: torch.utils.data.Sampler | None = None,
+        weight_column: str | None = None,
     ):
         '''
         Get a PyTorch DataLoader for the dataset.
 
         Args:
             batch_size (int): The batch size for the DataLoader.
+            shuffle (bool | None): Whether to shuffle. Must be ``None`` when ``sampler`` or ``weight_column`` is provided.
             num_workers (int): The number of worker processes for data loading.
             pin_memory (bool): Whether to use pinned memory for data loading.
             prefetch_factor (int): The number of samples to prefetch per worker.
             return_dict (bool): Whether to return a dictionary of batched tensors. If False, returns a tuple.
+            sampler (torch.utils.data.Sampler | None): Custom sampler.
+                Mutually exclusive with ``shuffle`` and ``weight_column``.
+            weight_column (str | None): Column name for per-sample weights.
+                Creates a :class:`~torch.utils.data.WeightedRandomSampler` with
+                ``replacement=True``. Mutually exclusive with ``shuffle`` and
+                ``sampler``.
+
         Returns:
             torch.utils.data.DataLoader: The PyTorch DataLoader for the dataset.
         '''
         persistent_workers = num_workers > 0
+
+        if sampler is None and weight_column is not None:
+            weights = torch.as_tensor(
+                self._dataset[weight_column], dtype=torch.float32
+            )
+            sampler = torch.utils.data.WeightedRandomSampler(
+                weights, len(weights), replacement=True
+            )
+
+        if sampler is not None:
+            shuffle = None
+
         return torch.utils.data.DataLoader(
             self, # type: ignore
             shuffle=shuffle,
+            sampler=sampler,
             batch_size=batch_size, collate_fn=self.get_collate_fn(return_dict),
             num_workers=num_workers, pin_memory=pin_memory, prefetch_factor=prefetch_factor,
             persistent_workers=persistent_workers
