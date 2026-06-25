@@ -275,23 +275,18 @@ def save_dataset(
         json.dump(config, temp)
     os.replace(temp.name, os.path.join(dest_dir, 'config.json'))
 
-class HfDataset(torch.utils.data.Dataset):
+class HfDataset():
     '''
-    PyTorch :class:`~torch.utils.data.Dataset` backed by a partitioned Parquet
-    dataset on disk. Implements ``__len__`` and ``__getitem__``, delegating to
-    the underlying HuggingFace Dataset. Suitable as a base class or for direct
-    use with :func:`~torch.utils.data.DataLoader`.
+    Wraps a partitioned Parquet dataset on disk, providing deterministic
+    :meth:`map` / :meth:`filter` and :meth:`get_dataloader` with optional
+    weighted sampling.
 
-    Subclass and override :meth:`__getitem__` for per-sample transforms
-    (e.g. random cropping, augmentation) that must execute fresh on each access.
+    Usage::
 
-    Usage:
-
-        class MyDataset(HfDataset):
-            def __getitem__(self, idx):
-                sample = super().__getitem__(idx)
-                sample['features'] = my_augment(sample['features'])
-                return sample
+        ds = (HfDataset('/path', split='train')
+            .filter(lambda x: x['label'] >= 0)
+            .map(preprocess, batched=True))
+        loader = ds.get_dataloader(32, weight_column='sample_weight')
 
     Args:
         root_dir (str): The root directory of the dataset.
@@ -325,12 +320,6 @@ class HfDataset(torch.utils.data.Dataset):
             List[str]: The list of column names.
         '''
         return self._dataset.column_names # type: ignore
-
-    def __len__(self) -> int:
-        return len(self._dataset) # type: ignore
-
-    def __getitem__(self, idx):
-        return self._dataset[int(idx)]
 
     def map(self, fn, *, batched: bool = False, batch_size: int = 1000,
             num_proc: int | None = None, remove_columns: list[str] | None = None,
@@ -416,7 +405,7 @@ class HfDataset(torch.utils.data.Dataset):
             shuffle = None
 
         return torch.utils.data.DataLoader(
-            self, # type: ignore
+            self._dataset, # type: ignore
             shuffle=shuffle,
             sampler=sampler,
             batch_size=batch_size, collate_fn=self.get_collate_fn(return_dict),
