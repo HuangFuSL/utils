@@ -6,12 +6,28 @@ Author: HuangFuSL
 Date: 2025-06-26
 '''
 
-from typing import Callable, List, TypeVar
+from typing import Callable, List, Literal, TypeVar
 
 import torch
 
 PackedSequence = torch.nn.utils.rnn.PackedSequence
 PackedOrTensor = TypeVar('PackedOrTensor', torch.Tensor, PackedSequence)
+
+def flatten(x: PackedOrTensor) -> torch.Tensor:
+    '''
+    Flatten a PackedSequence or a regular tensor along the time dimension.
+
+    Args:
+        x (PackedOrTensor): The input PackedSequence or tensor to flatten.
+
+    Returns:
+        torch.Tensor: A tensor containing the flattened data. If the input is a PackedSequence, the output will be a tensor of shape (total_length, *feature_dims). If the input is a regular tensor, the output will be a tensor of shape (batch_size * seq_len, *feature_dims).
+    '''
+    if isinstance(x, torch.Tensor):
+        return x.reshape(-1, *x.shape[2:]) if x.dim() > 2 else x.reshape(-1)
+    elif isinstance(x, PackedSequence):
+        return x.data
+    raise TypeError(f'Input must be either PackedSequence or torch.Tensor, but got {type(x)}.')
 
 def prepend_left(
     input_tensor: PackedOrTensor, append_value: float | int = 0.0, num_steps: int = 1, batch_first: bool = True
@@ -207,17 +223,27 @@ def truncate_right(
 
 def masked_select(
     values_input: PackedOrTensor | torch.Tensor,
-    mask_input: PackedOrTensor | torch.Tensor
-) -> PackedSequence:
+    mask_input: PackedOrTensor | torch.Tensor,
+    output_format: Literal['packed', 'left', 'right'] = 'packed',
+    max_len: int | None = None,
+) -> PackedSequence | torch.Tensor:
     '''
     Perform masked selection of variable length on a PackedSequence or a regular tensor.
 
     Args:
         values_input (PackedOrTensor): The input values to select from.
         mask_input (PackedOrTensor): The mask indicating which values to select.
+        output_format (str): Output format. ``'packed'`` returns a PackedSequence
+            (left-aligned), ``'left'`` returns a left-aligned dense tensor with trailing
+            zeros, ``'right'`` returns a right-aligned dense tensor with leading zeros.
+            Defaults to ``'packed'``.
+        max_len (int | None): Explicit output time dimension. When provided, avoids a
+            host-device synchronization. Must be >= the maximum selected length per
+            sequence. For ``'right'`` output, exceeding ``max_len`` causes undefined
+            behavior (indices wrap silently). Defaults to ``None`` (auto-computed).
 
     Returns:
-        PackedSequence: A PackedSequence containing only the selected values.
+        PackedSequence | torch.Tensor: The selected values in the requested format.
 
     Example:
 
@@ -245,6 +271,11 @@ def masked_select(
             ]
             assert out_len.tolist() == [2, 1]
     '''
+    if output_format not in ('packed', 'left', 'right'):
+        raise ValueError(
+            f"Invalid output_format: {output_format}. Must be 'packed', 'left', or 'right'."
+        )
+
     # Sanity checks
     # Pad value sequences and check shape
     if isinstance(values_input, PackedSequence):
@@ -288,20 +319,33 @@ def masked_select(
     if torch.any(selected_len <= 0):
         raise ValueError('Some sequences have zero length after masking.')
 
+    # Determine output length
+    if max_len is not None:
+        out_len = max_len
+    else:
+        out_len = int(selected_len.max().item())
+
     # Allocate output tensors
-    out_len = int(selected_len.max().item())
     out_padded = values_padded.new_zeros((B, out_len, *H))
 
+    # Compute scatter indices
     new_positions = (mask_padded.long().cumsum(dim=1) - 1).clamp_min(0)
     batch_idx, in_padded_idx = torch.nonzero(mask_padded, as_tuple=True)
     out_padded_idx = new_positions[batch_idx, in_padded_idx]
+
+    if output_format == 'right':
+        out_padded_idx = out_padded_idx + (out_len - selected_len[batch_idx])
+
     out_padded[batch_idx, out_padded_idx] = values_padded[batch_idx, in_padded_idx]
 
-    out_packed = torch.nn.utils.rnn.pack_padded_sequence(
-        out_padded, lengths=selected_len.cpu(),
-        batch_first=True, enforce_sorted=False
-    )
-    return out_packed
+    # Return in requested format
+    if output_format == 'packed':
+        return torch.nn.utils.rnn.pack_padded_sequence(
+            out_padded, lengths=selected_len.cpu(),
+            batch_first=True, enforce_sorted=False
+        )
+    else:
+        return out_padded
 
 def packed_unary_op(
     func: Callable[[torch.Tensor], torch.Tensor], x: PackedOrTensor

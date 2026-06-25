@@ -530,3 +530,178 @@ class TestAppendRight(unittest.TestCase):
         test = append_right(ps, append_value=val, num_steps=k)
         target = self.trivial_append(ps, value=val, num_steps=k)
         self.check_packed_sequence(test, target)
+
+
+class TestMaskedSelectOutputFormat(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(42)
+        self.values = torch.tensor([
+            [[1., 10.], [2., 20.], [3., 30.], [4., 40.]],
+            [[5., 50.], [6., 60.], [7., 70.], [8., 80.]],
+        ], dtype=torch.float32)
+        self.mask = torch.tensor([
+            [True, False, True, False],
+            [False, True, True, False],
+        ], dtype=torch.bool)
+
+    def test_output_left_basic(self):
+        out = masked_select(self.values, self.mask, output_format='left')
+        self.assertIsInstance(out, torch.Tensor)
+        self.assertEqual(out.shape, (2, 2, 2))
+        expected = torch.tensor([
+            [[1., 10.], [3., 30.]],
+            [[6., 60.], [7., 70.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_output_right_basic(self):
+        out = masked_select(self.values, self.mask, output_format='right')
+        self.assertIsInstance(out, torch.Tensor)
+        self.assertEqual(out.shape, (2, 2, 2))
+        # seq 0: 2 selected → right-aligned in slots [0,1]
+        # seq 1: 2 selected → right-aligned in slots [0,1]
+        expected = torch.tensor([
+            [[1., 10.], [3., 30.]],
+            [[6., 60.], [7., 70.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_output_left_unequal_selection(self):
+        mask = torch.tensor([
+            [True, False, False, False],
+            [False, True, True, True],
+        ], dtype=torch.bool)
+        out = masked_select(self.values, mask, output_format='left')
+        self.assertEqual(out.shape, (2, 3, 2))
+        expected = torch.tensor([
+            [[1., 10.], [0., 0.], [0., 0.]],
+            [[6., 60.], [7., 70.], [8., 80.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_output_right_unequal_selection(self):
+        mask = torch.tensor([
+            [True, False, False, False],
+            [False, True, True, True],
+        ], dtype=torch.bool)
+        out = masked_select(self.values, mask, output_format='right')
+        self.assertEqual(out.shape, (2, 3, 2))
+        # seq 0: 1 selected → slot [2]
+        # seq 1: 3 selected → slots [0,1,2]
+        expected = torch.tensor([
+            [[0., 0.], [0., 0.], [1., 10.]],
+            [[6., 60.], [7., 70.], [8., 80.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_output_packed_with_max_len(self):
+        mask = torch.tensor([
+            [True, False, False, False],
+            [False, True, True, True],
+        ], dtype=torch.bool)
+        out = masked_select(self.values, mask, output_format='packed', max_len=5)
+        padded, lengths = torch.nn.utils.rnn.pad_packed_sequence(
+            out, batch_first=True, total_length=5
+        )
+        self.assertEqual(padded.shape, (2, 5, 2))
+        self.assertEqual(lengths.tolist(), [1, 3])
+
+    def test_output_left_with_max_len(self):
+        mask = torch.tensor([
+            [True, False, False, False],
+            [False, True, True, True],
+        ], dtype=torch.bool)
+        out = masked_select(self.values, mask, output_format='left', max_len=5)
+        self.assertEqual(out.shape, (2, 5, 2))
+        expected = torch.tensor([
+            [[1., 10.], [0., 0.], [0., 0.], [0., 0.], [0., 0.]],
+            [[6., 60.], [7., 70.], [8., 80.], [0., 0.], [0., 0.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_output_right_with_max_len(self):
+        mask = torch.tensor([
+            [True, False, False, False],
+            [False, True, True, True],
+        ], dtype=torch.bool)
+        out = masked_select(self.values, mask, output_format='right', max_len=5)
+        self.assertEqual(out.shape, (2, 5, 2))
+        # seq 0: 1 selected → slot [4]
+        # seq 1: 3 selected → slots [2,3,4]
+        expected = torch.tensor([
+            [[0., 0.], [0., 0.], [0., 0.], [0., 0.], [1., 10.]],
+            [[0., 0.], [0., 0.], [6., 60.], [7., 70.], [8., 80.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(out, expected))
+
+    def test_gradient_flow_left(self):
+        values = self.values.clone().requires_grad_(True)
+        out = masked_select(values, self.mask, output_format='left')
+        loss = out.sum()
+        loss.backward()
+        self.assertIsNotNone(values.grad)
+        # Only selected positions should have grad=1
+        expected_grad = torch.tensor([
+            [[1., 1.], [0., 0.], [1., 1.], [0., 0.]],
+            [[0., 0.], [1., 1.], [1., 1.], [0., 0.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(values.grad, expected_grad))
+
+    def test_gradient_flow_right(self):
+        values = self.values.clone().requires_grad_(True)
+        out = masked_select(values, self.mask, output_format='right')
+        loss = out.sum()
+        loss.backward()
+        self.assertIsNotNone(values.grad)
+        expected_grad = torch.tensor([
+            [[1., 1.], [0., 0.], [1., 1.], [0., 0.]],
+            [[0., 0.], [1., 1.], [1., 1.], [0., 0.]],
+        ], dtype=torch.float32)
+        self.assertTrue(torch.equal(values.grad, expected_grad))
+
+    def test_cross_device_left_right(self):
+        if torch.cuda.is_available():
+            device = 'cuda'
+        elif torch.backends.mps.is_available():
+            device = 'mps'
+        else:
+            return
+        values = self.values.to(device)
+        mask = self.mask.to(device)
+
+        for fmt in ['left', 'right']:
+            out = masked_select(values, mask, output_format=fmt)
+            self.assertEqual(out.device.type, device)
+            self.assertEqual(out.shape, (2, 2, 2))
+
+    def test_invalid_output_format(self):
+        with self.assertRaises(ValueError):
+            masked_select(self.values, self.mask, output_format='invalid')
+
+    def test_raises_on_zero_length(self):
+        mask = torch.tensor([
+            [False, False, False, False],
+            [True, False, False, False],
+        ], dtype=torch.bool)
+        for fmt in ['packed', 'left', 'right']:
+            with self.assertRaisesRegex(ValueError, 'zero length'):
+                masked_select(self.values, mask, output_format=fmt)
+
+    def test_no_feature_dim_left_right(self):
+        values = torch.tensor([
+            [1., 2., 3., 4.],
+            [5., 6., 7., 8.],
+        ], dtype=torch.float32)
+        mask = torch.tensor([
+            [True, False, True, False],
+            [False, True, False, True],
+        ], dtype=torch.bool)
+
+        out_left = masked_select(values, mask, output_format='left')
+        self.assertEqual(out_left.shape, (2, 2))
+        expected = torch.tensor([[1., 3.], [6., 8.]], dtype=torch.float32)
+        self.assertTrue(torch.equal(out_left, expected))
+
+        out_right = masked_select(values, mask, output_format='right')
+        self.assertEqual(out_right.shape, (2, 2))
+        self.assertTrue(torch.equal(out_right, expected))
