@@ -275,25 +275,30 @@ def save_dataset(
         json.dump(config, temp)
     os.replace(temp.name, os.path.join(dest_dir, 'config.json'))
 
-class HfDataset():
+class HfDataset(torch.utils.data.Dataset):
     '''
-    Initialize a Dataset instance from a partitioned Parquet dataset on disk.
+    PyTorch :class:`~torch.utils.data.Dataset` backed by a partitioned Parquet
+    dataset on disk. Implements ``__len__`` and ``__getitem__``, delegating to
+    the underlying HuggingFace Dataset. Suitable as a base class or for direct
+    use with :func:`~torch.utils.data.DataLoader`.
+
+    Subclass and override :meth:`__getitem__` for per-sample transforms
+    (e.g. random cropping, augmentation) that must execute fresh on each access.
 
     Usage:
-        .. code-block:: python
 
-            dataset = HfDataset('/path/to/dataset', split='train')
-            dataloader = dataset.get_dataloader(batch_size=32, num_workers=4)
-            for batch in dataloader:
-                features = batch['features']  # PackedSequence
-                labels = batch['label']        # Tensor
+        class MyDataset(HfDataset):
+            def __getitem__(self, idx):
+                sample = super().__getitem__(idx)
+                sample['features'] = my_augment(sample['features'])
+                return sample
 
     Args:
         root_dir (str): The root directory of the dataset.
         split (str): The dataset split name (e.g., 'train', 'val', 'test').
-        columns (Sequence[str] | None): The columns to include in the dataset. If None, all columns are included.
-        float_dtype (torch.dtype): The torch dtype to use for floating point columns, torch.float32 by default.
-        int_dtype (torch.dtype): The torch dtype to use for integer columns, torch.int64 by default.
+        columns (Sequence[str] | None): Columns to include. None for all.
+        float_dtype (torch.dtype): Torch dtype for float columns.
+        int_dtype (torch.dtype): Torch dtype for integer columns.
     '''
     def __init__(
         self, root_dir: str, split: str = 'train', *,
@@ -321,6 +326,12 @@ class HfDataset():
         '''
         return self._dataset.column_names # type: ignore
 
+    def __len__(self) -> int:
+        return len(self._dataset) # type: ignore
+
+    def __getitem__(self, idx):
+        return self._dataset[int(idx)]
+
     def get_dataloader(
         self, batch_size: int, shuffle: bool | None = None,
         num_workers: int = 0,
@@ -341,7 +352,7 @@ class HfDataset():
         '''
         persistent_workers = num_workers > 0
         return torch.utils.data.DataLoader(
-            self._dataset, # type: ignore
+            self, # type: ignore
             shuffle=shuffle,
             batch_size=batch_size, collate_fn=self.get_collate_fn(return_dict),
             num_workers=num_workers, pin_memory=pin_memory, prefetch_factor=prefetch_factor,
