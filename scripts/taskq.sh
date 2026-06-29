@@ -146,6 +146,8 @@ cleanup_stale_jobs_locked() {
     rm -f -- "$file"
   done
 
+  rm -f -- "$RUN_DIR"/.*.pid
+
   rm -f -- "$QUEUE_DIR"/.*.tmp "$RUN_DIR"/.*.tmp
 
   exec 7>&-
@@ -216,26 +218,32 @@ queue_has_jobs() {
 # Run a single job by moving it to the running directory, executing it, and handling success or failure
 run_one_job() {
   local job="$1"
-  local base job_id claimed failed_path rc
+  local base job_id claimed failed_path rc job_pid pid_file
 
   base="$(basename "$job")"
   job_id="${base%.job}"
   claimed="$RUN_DIR/$base"
   failed_path="$FAILED_DIR/${job_id}.failed"
+  pid_file="$RUN_DIR/.${job_id}.pid"
 
   if ! mv "$job" "$claimed" 2>/dev/null; then
     return 0
   fi
 
+  bash "$claimed" &
+  job_pid=$!
+  printf '%d\n' "$job_pid" >"$pid_file"
+
   exec 9>"$TASK_LOCK"
   flock 9
 
   set +e
-  bash "$claimed"
+  wait "$job_pid"
   rc=$?
   set -e
 
   exec 9>&-
+  rm -f "$pid_file"
 
   if (( rc == 0 )); then
     rm -f "$claimed"
@@ -431,8 +439,15 @@ handle_kill() {
 
 stop_dispatcher() {
   if dispatcher_running; then
-    local pid
+    local pid jpid pidf
     read -r pid <"$PID_FILE"
+
+    for pidf in "$RUN_DIR"/.*.pid; do
+      [[ -f "$pidf" ]] || continue
+      read -r jpid <"$pidf" 2>/dev/null && kill "$jpid" 2>/dev/null || true
+      rm -f "$pidf"
+    done
+
     kill "$pid" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
