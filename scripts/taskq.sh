@@ -61,6 +61,7 @@ STATE_DIR="$SCRIPT_DIR/.taskq"
 QUEUE_DIR="$STATE_DIR/queue"
 RUN_DIR="$STATE_DIR/running"
 FAILED_DIR="$STATE_DIR/failed"
+LOGS_DIR="$STATE_DIR/logs"
 PID_FILE="$STATE_DIR/dispatcher.pid"
 
 QUEUE_LOCK="$STATE_DIR/queue.lock"
@@ -87,7 +88,7 @@ fi
 
 # Create necessary directories and files for the dispatcher state
 ensure_state() {
-  mkdir -p "$QUEUE_DIR" "$RUN_DIR" "$FAILED_DIR"
+  mkdir -p "$QUEUE_DIR" "$RUN_DIR" "$FAILED_DIR" "$LOGS_DIR"
   [[ -f "$SEQ_FILE" ]] || printf '0\n' >"$SEQ_FILE"
 }
 
@@ -218,19 +219,29 @@ queue_has_jobs() {
 # Run a single job by moving it to the running directory, executing it, and handling success or failure
 run_one_job() {
   local job="$1"
-  local base job_id claimed failed_path rc job_pid pid_file
+  local base job_id claimed failed_path rc job_pid pid_file log_file current_log
 
   base="$(basename "$job")"
   job_id="${base%.job}"
   claimed="$RUN_DIR/$base"
   failed_path="$FAILED_DIR/${job_id}.failed"
   pid_file="$RUN_DIR/.${job_id}.pid"
+  log_file="$LOGS_DIR/${job_id}.log"
+  current_log="$LOGS_DIR/current.log"
 
   if ! mv "$job" "$claimed" 2>/dev/null; then
     return 0
   fi
 
-  bash "$claimed" &
+  {
+    printf '# taskq job: %s\n' "$job_id"
+    printf '# cmdline: %s\n' "$(extract_cmdline "$claimed")"
+    printf '# started: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '#\n'
+  } >"$log_file"
+  ln -sf "$log_file" "$current_log"
+
+  bash "$claimed" >>"$log_file" 2>&1 &
   job_pid=$!
   printf '%d\n' "$job_pid" >"$pid_file"
 
@@ -244,6 +255,15 @@ run_one_job() {
 
   exec 9>&-
   rm -f "$pid_file"
+
+  {
+    head -n 3 "$log_file"
+    printf '# finished: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '# exit_code: %d\n' "$rc"
+    tail -n +4 "$log_file"
+  } >"${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
+
+  rm -f "$current_log"
 
   if (( rc == 0 )); then
     rm -f "$claimed"
@@ -373,6 +393,13 @@ show_status() {
       local current_cmdline
       current_cmdline="$(extract_cmdline "${running_files[0]}")"
       printf '%sCurrent job%s: %s\n' "$bold_green" "$reset" "$current_cmdline"
+
+      local current_log="$LOGS_DIR/current.log"
+      if [[ -f "$current_log" ]]; then
+        printf '%s--- last 20 lines (%s) ---%s\n' "$gray" "$current_log" "$reset"
+        tail -n +5 "$current_log" | tail -20
+        printf '%s────────────────────────────────────────%s\n' "$gray" "$reset"
+      fi
     else
       printf '%sNo running jobs%s\n' "$bold_yellow" "$reset"
     fi
@@ -514,8 +541,10 @@ main() {
       usage
       ;;
     "")
+      show_status
+      echo
       usage
-      exit 2
+      exit 0
       ;;
     *)
       submit_job "$DEFAULT_IDLE_TIMEOUT" "$@"
