@@ -416,6 +416,8 @@ show_status() {
 }
 
 handle_kill() {
+  local force="${1:-false}"
+
   ensure_state
 
   local -a queued_files=("$QUEUE_DIR"/*.job)
@@ -436,6 +438,16 @@ handle_kill() {
   printf 'Trying to stop dispatcher (backend: %s)\n' "$BACKEND"
 
   if (( running == 0 )); then
+    stop_dispatcher
+    return 0
+  fi
+
+  if $force; then
+    printf 'Running task(s) will be interrupted:\n'
+    for job in "${running_files[@]}"; do
+      printf '  - %s\n' "$(extract_cmdline "$job")"
+    done
+    printf 'Queued jobs: %d (will be discarded)\n' "$queued"
     stop_dispatcher
     return 0
   fi
@@ -486,6 +498,7 @@ usage:
   $0 <command> [args...]
   $0 --status
   $0 --kill
+  $0 --kill-yes
   $0 --dispatcher --idle-timeout <seconds>
 
 environment:
@@ -535,7 +548,10 @@ main() {
       show_status
       ;;
     --kill)
-      handle_kill
+      handle_kill false
+      ;;
+    --kill-yes)
+      handle_kill true
       ;;
     --help|-h)
       usage
