@@ -59,6 +59,14 @@ class Trajectory():
     def __len__(self):
         return self.state.shape[0]
 
+    def to(self, device: torch.device | str):
+        for k in self.tensor_fields:
+            v = getattr(self, k)
+            if not isinstance(v, torch.Tensor):
+                raise TypeError(f'Field {k} must be a torch.Tensor, got {type(v)}')
+            setattr(self, k, v.to(device))
+        return self
+
 class CircularTensor(nn.Module):
     '''
     Implements a circular buffer for storing tensors. Supports ``state_dict()`` and ``load_state_dict()`` for checkpointing.
