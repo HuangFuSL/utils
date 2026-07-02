@@ -18,10 +18,12 @@ tag_output() {
 usage() {
   cat <<'EOF'
 usage: gather.sh [options] "cmd1" ["cmd2" ...]
+       gather.sh --show-log N [logfile]
 
 options:
   --max-concurrent N   Maximum parallel commands (default: 0 = unlimited)
   --fail-fast          Kill all remaining commands on first failure
+  --show-log N [file]  Show output for instance N from a log file (or stdin)
   --help, -h           Show this message
 
 Each positional argument is a shell command executed via bash -c.
@@ -31,6 +33,8 @@ examples:
   gather.sh "echo hello" "echo world"
   gather.sh --max-concurrent 2 "sleep 5" "sleep 3" "sleep 1"
   gather.sh --fail-fast --max-concurrent 4 "cmd1" "cmd2" "cmd3"
+  gather.sh --show-log 3 run.log
+  cat run.log | gather.sh --show-log 1
 
 log grepping:
   # task output for instance N (no metadata lines)
@@ -63,6 +67,25 @@ while [[ $# -gt 0 ]]; do
     --fail-fast)
       FAIL_FAST=true
       shift
+      ;;
+    --show-log)
+      shift
+      SHOW_LOG_INSTANCE="${1:-}"
+      shift || true
+      if [[ -n "$SHOW_LOG_INSTANCE" ]]; then
+        if [[ $# -gt 0 ]]; then
+          grep "^\[Instance #${SHOW_LOG_INSTANCE}\]" "$1"
+        else
+          grep "^\[Instance #${SHOW_LOG_INSTANCE}\]"
+        fi
+      else
+        if [[ $# -gt 0 ]]; then
+          cat "$1"
+        else
+          cat
+        fi
+      fi
+      exit $?
       ;;
     --help|-h)
       usage

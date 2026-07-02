@@ -473,6 +473,114 @@ show_status() {
   fi
 }
 
+# Show log for a specific job by ID, supporting partial/fuzzy matching
+show_log() {
+  local job_id_pattern="${1:-}"
+
+  ensure_state
+
+  if [[ -z "$job_id_pattern" ]]; then
+    if [[ -L "$LOGS_DIR/current.log" ]]; then
+      local resolved
+      resolved="$(readlink "$LOGS_DIR/current.log")"
+      job_id_pattern="$(basename "$resolved" .log)"
+    else
+      printf 'error: no running job and no job id provided\nusage: %s --show-log [job-id]\n' "$SCRIPT_NAME" >&2
+      exit 2
+    fi
+  fi
+
+  local bold_green=$'\033[1;32m'
+  local bold_red=$'\033[1;31m'
+  local bold_yellow=$'\033[1;33m'
+  local gray=$'\033[90m'
+  local reset=$'\033[0m'
+
+  # Pad numeric IDs to 10-digit format
+  local padded="$job_id_pattern"
+  if [[ "$job_id_pattern" =~ ^[0-9]+$ ]]; then
+    printf -v padded '%010d' "$((10#$job_id_pattern))"
+  fi
+
+  # Exact match first (padded ID)
+  local -a matches=()
+  [[ -f "$LOGS_DIR/${padded}.log" ]] && matches+=("$LOGS_DIR/${padded}.log")
+
+  # Fuzzy glob match as fallback
+  if (( ${#matches[@]} == 0 )); then
+    local f
+    for f in "$LOGS_DIR/${job_id_pattern}"*.log; do
+      [[ -f "$f" ]] && matches+=("$f")
+    done
+  fi
+
+  # No match: try to explain why
+  if (( ${#matches[@]} == 0 )); then
+    printf 'error: no log found for job ID: %s\n' "$job_id_pattern" >&2
+    local hint=''
+    if [[ -f "$QUEUE_DIR/${padded}.job" ]]; then
+      hint=' (job is queued, not yet started)'
+    elif [[ -f "$RUN_DIR/${padded}.job" ]]; then
+      hint=' (job is running, log may not be flushed yet)'
+    elif [[ -f "$FAILED_DIR/${padded}.failed" ]]; then
+      hint=' (job failed but no log preserved)'
+    fi
+    [[ -n "$hint" ]] && printf '%s%s\n' "$job_id_pattern" "$hint" >&2
+    return 1
+  fi
+
+  # Ambiguous match
+  if (( ${#matches[@]} > 1 )); then
+    printf 'error: multiple logs match "%s":\n' "$job_id_pattern" >&2
+    for f in "${matches[@]}"; do
+      printf '  %s\n' "$(basename "$f" .log)"
+    done
+    return 1
+  fi
+
+  local log_file="${matches[0]}"
+  local job_id
+  job_id="$(basename "$log_file" .log)"
+
+  # Determine job status
+  local status_text status_color
+  if grep -q '^# exit_code:' "$log_file" 2>/dev/null; then
+    local exit_code
+    exit_code="$(sed -n 's/^# exit_code: //p' "$log_file" | tail -1)"
+    if [[ "$exit_code" == '0' ]]; then
+      status_text="COMPLETED (exit 0)"
+      status_color="$bold_green"
+    else
+      status_text="FAILED (exit $exit_code)"
+      status_color="$bold_red"
+    fi
+  elif [[ -f "$RUN_DIR/${job_id}.job" ]]; then
+    status_text="RUNNING"
+    status_color="$bold_yellow"
+  else
+    status_text="UNKNOWN"
+    status_color="$gray"
+  fi
+
+  printf '%sJob ID: %s  Status: %s%s%s\n' \
+    "$bold_yellow" "$job_id" "$status_color" "$status_text" "$reset"
+
+  local cmdline
+  cmdline="$(sed -n 's/^# cmdline: //p' "$log_file" | head -1)"
+  [[ -n "$cmdline" ]] && printf '%sCommand: %s%s\n' "$gray" "$cmdline" "$reset"
+
+  local started finished
+  started="$(sed -n 's/^# started: //p' "$log_file" | head -1)"
+  finished="$(sed -n 's/^# finished: //p' "$log_file" | head -1)"
+  [[ -n "$started" ]] && printf '%sStarted:  %s%s\n' "$gray" "$started" "$reset"
+  [[ -n "$finished" ]] && printf '%sFinished: %s%s\n' "$gray" "$finished" "$reset"
+
+  printf '%s────────────────────────────────────────%s\n' "$gray" "$reset"
+
+  # Output log body (skip metadata header lines up to the separator)
+  sed '1,/^#$/d' "$log_file"
+}
+
 handle_kill() {
   local force="${1:-false}"
 
@@ -578,6 +686,7 @@ usage() {
 usage:
   $0 <command> [args...]
   $0 --status
+  $0 --show-log [job-id]
   $0 --kill
   $0 --kill-yes
   $0 --dispatcher --idle-timeout <seconds>
@@ -595,6 +704,7 @@ examples:
   $0 bash sync.sh
   IDLE_TIMEOUT=300 $0 python long_task.py
   $0 --status
+  $0 --show-log 42
 EOF
 }
 
@@ -633,6 +743,10 @@ main() {
       ;;
     --kill-yes)
       handle_kill true
+      ;;
+    --show-log)
+      shift
+      show_log "${1:-}"
       ;;
     --help|-h)
       usage
