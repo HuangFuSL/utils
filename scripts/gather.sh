@@ -69,6 +69,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --show-log)
+      set +m  # no background jobs needed here; avoid breaking pipes with less
       shift
       SHOW_LOG_INSTANCE="${1:-}"
       shift || true
