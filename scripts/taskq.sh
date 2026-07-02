@@ -205,6 +205,7 @@ _enqueue_job_unsafe() {
   {
     printf '#!/usr/bin/env bash\n'
     printf 'set -euo pipefail\n'
+    printf 'exec 7>&- # close fd 7 to avoid locking issues\n'
     printf '# cwd: %s\n' "$submit_cwd"
     printf '# cmdline: %s\n' "$cmdline"
     printf 'export PATH=%q\n' "$PATH"
