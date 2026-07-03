@@ -356,6 +356,19 @@ class TargetNetworkMixin(nn.Module):
             return self._target
         return self
 
+    def value_parameters(self) -> Iterator[torch.nn.Parameter]:
+        '''
+        Get the parameters of the value network.
+
+        Returns:
+            Iterator[torch.nn.Parameter]: An iterator over the parameters of the value network.
+        '''
+        if self._target is not None:
+            target_ids = { id(p) for p in self.target.parameters() }
+        else:
+            target_ids = set()
+        return (p for p in self.parameters() if id(p) not in target_ids)
+
     @torch.no_grad()
     def copy_params(self, src: torch.Tensor | None, tgt: torch.Tensor | None, weight: float = 1.0):
         if src is None or tgt is None or \
@@ -454,7 +467,12 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
         Returns:
             Iterator[torch.nn.Parameter]: An iterator over the parameters of the policy network.
         '''
-        inner_ids = { id(p) for p in self.value_parameters() }
+        try:
+            inner_ids = { id(p) for p in self.value_model.parameters() }
+        except (NotImplementedError, AttributeError):
+            inner_ids = set()
+        if self._target is not None:
+            inner_ids.update({ id(p) for p in self._target.parameters() })
         if not inner_ids:
             return self.parameters()
         return (p for p in self.parameters() if id(p) not in inner_ids)
@@ -474,7 +492,7 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
             Iterator[torch.nn.Parameter]: An iterator over the parameters of the value network.
         '''
         try:
-            return self.value_model.parameters()
+            return self.value_model.value_parameters()
         except NotImplementedError:
             return iter(())
 
