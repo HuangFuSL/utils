@@ -130,7 +130,7 @@ class ReplayBuffer(nn.Module):
 
     def __getitem__(self, idx: torch.Tensor) -> Trajectory:
         ''' Sample a batch of experiences from the buffer. '''
-        return Trajectory(*(self.data[k][idx] for k in self.keys), total_reward=float('nan'))
+        return Trajectory.from_tensors(*(self.data[k][idx] for k in self.keys))
 
     def get_batch(self, idx: torch.Tensor) -> Trajectory:
         ''' Sample a batch of experiences from the buffer. '''

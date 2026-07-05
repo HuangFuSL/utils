@@ -1,9 +1,9 @@
-import dataclasses
 import functools
-from typing import Any, Callable, ClassVar, Dict, List, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import gymnasium
 import torch
+import numpy as np
 
 from .model import BaseRLModel
 from .data import Trajectory
@@ -41,7 +41,7 @@ RewardMapping = Callable[
 ]
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def run_episode(
     env: gymnasium.Env, model: BaseRLModel,
     max_episode_steps: int | None = None,
@@ -62,9 +62,9 @@ def run_episode(
         Trajectory: The collected trajectory.
     '''
     # Parse env
-    s_shape = env.observation_space.shape
-    a_shape = env.action_space.shape
-    a_dtype = env.action_space.dtype
+    s_shape: Tuple[int, ...] = env.observation_space.shape # type: ignore
+    a_shape: Tuple[int, ...] = env.action_space.shape # type: ignore
+    a_dtype: np.dtype = env.action_space.dtype # type: ignore
     if max_episode_steps is None:
         max_len = env._max_episode_steps # type: ignore
     else:
@@ -78,11 +78,12 @@ def run_episode(
 
     device = model.device
     pin_memory = torch.cuda.is_available() and model.device.type == 'cuda'
-    result_s = torch.zeros(max_len, 2, *s_shape, dtype=torch.float, pin_memory=pin_memory)
-    result_a = torch.zeros(max_len, *a_shape, dtype=torch.float, pin_memory=pin_memory)
-    result_r = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
-    result_d = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
-    result_pi = torch.zeros(max_len, dtype=torch.float, pin_memory=pin_memory)
+    action_dtype = torch.long if np.issubdtype(a_dtype, np.integer) else torch.float32
+    result = Trajectory.fixed_length(
+        max_len, state_shape=s_shape, action_shape=a_shape,
+        action_dtype=action_dtype, total_reward=float('nan'),
+        pin_memory=pin_memory
+    )
 
     rewards = torch.tensor(0.0, device='cpu')
     steps = 0
@@ -101,12 +102,7 @@ def run_episode(
         rewards += reward
         reward = reward_shape(state, action, reward, next_state, done, time_exceed)
 
-        result_s[steps, 0] = state
-        result_a[steps] = action.unsqueeze(0)
-        result_r[steps] = reward.unsqueeze(0)
-        result_s[steps, 1] = next_state
-        result_d[steps] = done.unsqueeze(0)
-        result_pi[steps] = log_pi.unsqueeze(0)
+        result[steps] = (state, action, reward, next_state, done, log_pi)
 
         steps += 1
         state = next_state
@@ -114,14 +110,8 @@ def run_episode(
         if torch.any(done + time_exceed) or steps >= max_len:
             break
 
-    s, a, r, s_prime, d, log_pi = map(lambda x: x.to(device), [
-        result_s[:steps, 0],  # state
-        result_a[:steps], # action
-        result_r[:steps], # reward
-        result_s[:steps, 1], # next_state
-        result_d[:steps], # done
-        result_pi[:steps]
-    ])
+    result = result[:steps].to(device)
+    result.total_reward = rewards.item()
 
     if model.tau > 1:
         gamma = model.gamma
@@ -129,13 +119,14 @@ def run_episode(
             torch.arange(model.tau, dtype=torch.float, device=device)
         )
 
-        r = r.reshape(1, 1, -1)
+        r = result.reward.reshape(1, 1, -1)
         kernel = kernel.reshape(1, 1, -1)
         r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1)
         ret_length = r_conv.shape[0]
-        return Trajectory(
-            s[:ret_length], a[:ret_length],
-            r_conv, s_prime[model.tau - 1:], d[model.tau - 1:], \
-            log_pi[:ret_length], rewards.item()
+        result = Trajectory.from_tensors(
+            result.state[:ret_length], result.action[:ret_length],
+            r_conv, result.next_state[model.tau - 1:],
+            result.done[model.tau - 1:], result.log_pi[:ret_length],
+            rewards.item()
         )
-    return Trajectory(s, a, r, s_prime, d, log_pi, rewards.item())
+    return result
