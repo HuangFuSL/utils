@@ -264,14 +264,18 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
             - r: (L,)
             - output: (L,)
         '''
-        gamma = self.gamma * lambda_
-        y = torch.zeros_like(r)
-        acc = torch.zeros_like(r[..., 0])
         T = r.size(-1)
-        for t in range(T - 1, -1, -1):
-            acc = r[..., t] + gamma * acc
-            y[..., t] = acc
-        return y
+        device, dtype = r.device, r.dtype
+        r_rev = torch.flip(r, dims=[-1])
+        log_gamma = torch.tensor(
+            self.gamma * lambda_, device=device, dtype=torch.float64
+        ).log()
+        log_w = log_gamma * torch.arange(T, device=device, dtype=torch.float64)
+
+        inv_w = torch.exp(-log_w)
+        w = torch.exp(log_w)
+        y_rev = w * torch.cumsum(inv_w * r_rev.to(torch.float64), dim=-1)
+        return torch.flip(y_rev, dims=[-1]).to(dtype)
 
     def normalize_trajectory(self, r: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
         return (r - r.mean().detach()) / (r.std(unbiased=False).detach() + eps)
