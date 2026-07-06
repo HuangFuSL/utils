@@ -254,6 +254,8 @@ class GlobalContext(BaseContext):
             'update': self.update,
             'scheduler_step': self.scheduler_step,
             'metrics': self.metrics,
+            'step': self.step,
+            'hyperparams': self.hyperparams,
         } | super().to_dict()
 
     def load_dict(self, data: Dict[str, Any]):
@@ -265,6 +267,8 @@ class GlobalContext(BaseContext):
         self.update = data['update']
         self.scheduler_step = data['scheduler_step']
         self.metrics = data['metrics']
+        self.step = data['step']
+        self.hyperparams = data['hyperparams']
 
 @dataclasses.dataclass
 class EpochContext(BaseContext):
