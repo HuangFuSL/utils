@@ -45,22 +45,11 @@ class LoopControl(enum.IntEnum):
             ret = LoopControl(max(self.value, other.value))
         return ret
 
-    def throw(self, threshold: 'LoopControl | None' = None) -> None:
-        if threshold is None:
-            threshold = LoopControl.NONE
-        if self and self >= threshold:
-            raise BreakLoop(self)
 
 # Exceptions
 class DeferHookExec(Exception):
     ''' Exception for resolving hook execution order. '''
     pass
-
-
-class BreakLoop(Exception):
-    ''' Exception to break the current loop with a control flag. '''
-    def __init__(self, control: LoopControl):
-        self.control = control
 
 
 class BaseHook():
@@ -313,14 +302,18 @@ class _NestedLoopCore(BaseHook):
         while True:
             self.parent._epoch_context = EpochContext()
             self.parent._step_context = None
-            self.parent.launch_event('epoch', LoopControl.SKIP_EPOCH)
+            ctrl = self.parent.launch_event('epoch', LoopControl.SKIP_EPOCH)
+            if ctrl > LoopControl.SKIP_EPOCH:
+                return ctrl
 
     def epoch(self) -> HookReturn:
         for _ in self.parent.dataloader:
             self.parent.global_context.fetch += 1
             self.parent._step_context = StepContext()
             self.parent.step_context.batch = _
-            self.parent.launch_event('step', LoopControl.SKIP_STEP)
+            ctrl = self.parent.launch_event('step', LoopControl.SKIP_STEP)
+            if ctrl > LoopControl.SKIP_STEP:
+                return ctrl
 
     def before_step(self) -> LoopControl | None:
         def _move_to_device(obj: Any, device: torch.device) -> Any:
@@ -343,7 +336,9 @@ class _NestedLoopCore(BaseHook):
 
     def step(self) -> HookReturn:
         for event in self.parent.event_sequence:
-            self.parent.launch_event(event, LoopControl.SKIP_EVENT)
+            ctrl = self.parent.launch_event(event, LoopControl.SKIP_EVENT)
+            if ctrl > LoopControl.SKIP_EVENT:
+                return ctrl
 
 class _TrainerCore(BaseHook):
     ''' Core hook for training loops. '''
@@ -514,36 +509,41 @@ class BatchedModelLoop():
         return self.model_context.lr_scheduler
 
     def launch_event(self, event_name: str, threshold: LoopControl = LoopControl.NONE):
+        ctrl = LoopControl.NONE
         try:
             try:
-                self._call_hooks(f'check_{event_name}').throw(threshold)
+                ctrl |= self._call_hooks(f'check_{event_name}')
+                if ctrl >= threshold:
+                    return ctrl
                 # By design,
                 # before_*, *, after_*, finally_* hooks should not return SKIP_*
                 # However, occasionally users may want to enforce skipping.
-                self._call_hooks(f'before_{event_name}').throw(threshold)
-                self._call_hooks(event_name).throw(threshold)
-                self._call_hooks(f'after_{event_name}').throw(threshold)
-            except BreakLoop:
-                raise
-            except Exception as e:
-                # Restoration is not supported
-                if self.exception is None:
-                    self.exception = e
-                    if self._call_hooks('on_exception'):
-                        warnings.warn(
-                            'Ignoring LoopControl returned by on_exception hook.'
-                        )
-                raise
+                ctrl |= self._call_hooks(f'before_{event_name}')
+                if ctrl >= threshold:
+                    return ctrl
+                ctrl |= self._call_hooks(event_name)
+                if ctrl >= threshold:
+                    return ctrl
+                ctrl |= self._call_hooks(f'after_{event_name}')
+                if ctrl >= threshold:
+                    return ctrl
             finally:
-                try:
-                    self._call_hooks(f'finalize_{event_name}').throw(threshold)
-                except BreakLoop as e:
+                ret = self._call_hooks(f'finalize_{event_name}')
+                if ret:
                     warnings.warn(
-                        f'Ignoring BreakLoop in finalize_{event_name} hook.'
+                        'Ignoring LoopControl returned by finalize hook.'
                     )
-        except BreakLoop as e:
-            if e.control > threshold:
-                raise e
+        except Exception as e:
+            # Restoration is not supported
+            if self.exception is None:
+                self.exception = e
+                if self._call_hooks('on_exception'):
+                    warnings.warn(
+                        'Ignoring LoopControl returned by on_exception hook.'
+                    )
+            raise
+
+        return ctrl
 
     def register_hook(self, hook: BaseHook, priority: int | None = None) -> None:
         '''
@@ -606,10 +606,8 @@ class BatchedModelLoop():
         if cleanup:
             self.reset_context()
             self.reset_hook_cache()
-        try:
-            self.launch_event(level, self.levels[level])
-        except BreakLoop:
-            return
+
+        self.launch_event(level, self.levels[level])
 
 class Trainer(BatchedModelLoop):
     '''
