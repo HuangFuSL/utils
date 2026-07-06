@@ -7,7 +7,7 @@ import dataclasses
 import enum
 import functools
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Set, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, OrderedDict, Tuple, TypeVar
 
 import torch
 
@@ -83,7 +83,11 @@ class BaseHook():
             finally:
                 object.__setattr__(self, "_track_hp", False)
 
+        def block_subclass(cls) -> None:
+            raise RuntimeError(f'{cls.__name__} cannot be subclassed.')
+
         cls.__init__ = wrapped_init
+        cls.__init_subclass__ = classmethod(block_subclass)  # type: ignore
 
     def __setattr__(self, name, value):
         object.__setattr__(self, name, value)
@@ -97,6 +101,8 @@ class BaseHook():
             object.__getattribute__(self, "_unresolved_hp").discard(name)
 
     def __getattribute__(self, name: str) -> Any:
+        if not object.__getattribute__(self, '_unresolved_hp'):
+            return super().__getattribute__(name)
         if name.startswith('_'):
             return super().__getattribute__(name)
         attr = super().__getattribute__(name)
@@ -437,7 +443,7 @@ class BatchedModelLoop():
         # Hooks and events
         self.event_sequence: List[str] = []
         self.hooks: List[Tuple[int, BaseHook]] = []
-        self._hook_sequence: Dict[str, List[Callable[[], LoopControl | None]]] = {}
+        self._hook_sequence: Dict[str, OrderedDict[str, Callable[[], LoopControl | None]]] = {}
 
         # Execution level
         self.levels = {
@@ -559,27 +565,29 @@ class BatchedModelLoop():
 
     def _call_hooks(self, method_name: str) -> LoopControl:
         control = LoopControl.NONE
-        exec_seq = []
+        exec_seq = OrderedDict()
         deferred_methods = self._hook_sequence.get(
-            method_name, [
-                hook[method_name] for _, hook in self.hooks if method_name in hook
-            ]
+            method_name, {
+                type(hook).__name__: hook[method_name]
+                for _, hook in self.hooks if method_name in hook
+            }
         )
         while deferred_methods:
-            new_deferred_methods = []
-            for method in deferred_methods:
+            new_deferred_methods = {}
+            for name, method in deferred_methods.items():
                 try:
                     ret = method()
                 except DeferHookExec:
-                    new_deferred_methods.append(method)
+                    new_deferred_methods[name] = method
                     continue
-                exec_seq.append(method)
+                exec_seq[name] = method
                 if ret is not None:
                     control |= ret
             if len(deferred_methods) == len(new_deferred_methods):
                 # No progress made, break to avoid infinite loop
+                failed_hooks = ', '.join(new_deferred_methods.keys())
                 raise RuntimeError(
-                    f'Cannot resolve dependencies for hooks in {method_name}.'
+                    f'Cannot resolve dependencies for {method_name} of hook {failed_hooks}.'
                 )
             deferred_methods = new_deferred_methods
 
