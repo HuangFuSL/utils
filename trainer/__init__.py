@@ -375,17 +375,8 @@ class _TrainerCore(BaseHook):
     def after_backward(self) -> HookReturn:
         self.parent.global_context.backward += 1
 
-    def optimizer_step(self) -> HookReturn:
-        for optim in self.parent.optimizer:
-            optim.step()
-
     def after_optimizer_step(self) -> HookReturn:
         self.parent.global_context.update += 1
-
-    def lr_scheduler_step(self) -> HookReturn:
-        if self.parent.lr_scheduler is not None:
-            for lr_scheduler in self.parent.lr_scheduler:
-                lr_scheduler.step()
 
     def after_lr_scheduler_step(self) -> HookReturn:
         self.parent.global_context.scheduler_step += 1

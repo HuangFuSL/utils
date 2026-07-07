@@ -84,6 +84,10 @@ class InitOptimizerHook(BaseHook):
             self.parent.model.parameters(), **self.kwargs
         )]
 
+    def optimizer_step(self) -> LoopControl | None:
+        for optim in self.parent.optimizer:
+            optim.step()
+
 
 class InitLRSchedulerHook(BaseHook):
     '''
@@ -103,6 +107,11 @@ class InitLRSchedulerHook(BaseHook):
         self.parent.model_context.lr_scheduler = [
             self.lr_scheduler_cls(self.parent.optimizer[0], **self.kwargs)
         ]
+
+    def lr_scheduler_step(self) -> LoopControl | None:
+        if self.parent.lr_scheduler is not None:
+            for lr_scheduler in self.parent.lr_scheduler:
+                lr_scheduler.step()
 
 
 class InitDataloaderHook(BaseHook):
