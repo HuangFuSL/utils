@@ -8,6 +8,8 @@ import uuid
 from types import UnionType
 from typing import Any, Callable, ClassVar, Dict, List, Tuple, Union, get_args, get_origin
 
+import polars as pl
+
 NoneType = type(None)
 
 
@@ -277,6 +279,7 @@ class HistoryRecord(BaseRecord):
 
 class Api():
     def __init__(self, db_path: str):
+        self._db_path = db_path
         self.conn = sqlite3.connect(db_path, timeout=30.0)
         self.conn.execute('PRAGMA foreign_keys = ON')
         self.conn.execute('PRAGMA journal_mode = WAL')
@@ -330,54 +333,100 @@ class Api():
         )
         yield from (row['key'] for row in cursor)
 
-    def history(
-        self, run_id: str, keys: List[str] | str | None = None,
-        min_step: int | None = None,
-        max_step: int | None = None
-    ):
-        self._ensure_open()
-        sql = '''
-        SELECT * FROM history
-        WHERE {}
-        ORDER BY step ASC, key ASC
-        '''
-        conditions = ['run_id=?']
-        args: List[Any] = [run_id]
+    @staticmethod
+    def _resolve_run_ids(run: 'str | RunRecord | List[str | RunRecord]') -> List[str]:
+        if isinstance(run, list):
+            return [r.id if isinstance(r, RunRecord) else r for r in run]
+        if isinstance(run, RunRecord):
+            return [run.id]
+        return [run]
+
+    @staticmethod
+    def _build_history_sql(
+        run_ids: List[str], keys: List[str] | str | None,
+        min_step: int | None, max_step: int | None
+    ) -> str | None:
+        conditions = [
+            'run_id IN ({})'.format(','.join(repr(r) for r in run_ids))
+        ]
         match keys:
             case None:
                 pass
             case str():
-                conditions.append('key=?')
-                args.append(keys)
+                conditions.append('key={}'.format(repr(keys)))
             case []:
-                yield from ()
-                return
+                return None
             case list():
                 conditions.append(
-                    'key IN ({})'.format(','.join('?' for _ in keys))
+                    'key IN ({})'.format(','.join(repr(k) for k in keys))
                 )
-                args.extend(keys)
         if min_step is not None:
-            conditions.append('step>=?')
-            args.append(min_step)
+            conditions.append('step>={}'.format(min_step))
         if max_step is not None:
-            conditions.append('step<=?')
-            args.append(max_step)
+            conditions.append('step<={}'.format(max_step))
 
-        cursor = self.conn.execute(sql.format(' AND '.join(conditions)), args)
+        return '''
+        SELECT * FROM history
+        WHERE {}
+        ORDER BY run_id ASC, step ASC, key ASC
+        '''.format(' AND '.join(conditions))
+
+    def history(
+        self, run: 'str | RunRecord | List[str | RunRecord]',
+        keys: List[str] | str | None = None,
+        min_step: int | None = None,
+        max_step: int | None = None
+    ):
+        self._ensure_open()
+        run_ids = self._resolve_run_ids(run)
+        sql = self._build_history_sql(run_ids, keys, min_step, max_step)
+        if sql is None:
+            yield from ()
+            return
+        cursor = self.conn.execute(sql)
         yield from (HistoryRecord.from_row(row) for row in cursor)
 
+    def history_polars(
+        self, run: 'str | RunRecord | List[str | RunRecord]',
+        keys: List[str] | str | None = None,
+        min_step: int | None = None,
+        max_step: int | None = None
+    ):
+        self._ensure_open()
+        run_ids = self._resolve_run_ids(run)
+        sql = self._build_history_sql(run_ids, keys, min_step, max_step)
+        if sql is None:
+            return pl.DataFrame()
+        return pl.read_database(sql, self.conn)
+
     def scan_history(
-        self, run_id: str, keys: List[str] | str | None = None,
+        self, run: 'str | RunRecord | List[str | RunRecord]',
+        keys: List[str] | str | None = None,
         min_step: int | None = None,
         max_step: int | None = None
     ):
         yield from map(
-            lambda g: {obj.key: obj.value for obj in g[1]} | {'_step': g[0]},
+            lambda g: {obj.key: obj.value for obj in g[1]}
+            | {'_run_id': g[0][0], '_step': g[0][1]},
             itertools.groupby(
-                self.history(run_id, keys, min_step, max_step),
-                key=lambda r: r.step
+                self.history(run, keys, min_step, max_step),
+                key=lambda r: (r.run_id, r.step)
             )
+        )
+
+    def scan_history_polars(
+        self, run: 'str | RunRecord | List[str | RunRecord]',
+        keys: List[str] | str | None = None,
+        min_step: int | None = None,
+        max_step: int | None = None
+    ):
+        df = self.history_polars(run, keys, min_step, max_step)
+        if df.is_empty():
+            return df
+        return df.pivot(
+            index=['run_id', 'step'],
+            on='key',
+            values='value_json',
         )
 
     def close(self):
