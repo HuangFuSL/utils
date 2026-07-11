@@ -220,3 +220,46 @@ class Trajectory():
         ret = copy.copy(self)
         ret._data = self._data.cuda(device).contiguous()
         return ret
+
+    @staticmethod
+    def _tau_step(
+        _data: torch.Tensor, tau: int, gamma: float, slice_dict: Dict[str, slice]
+    ):
+        if tau <= 0:
+            raise ValueError('tau must be positive.')
+        if tau > _data.shape[-2]:
+            raise ValueError('tau must be less than or equal to the length of the trajectory.')
+        if gamma < 0 or gamma > 1:
+            raise ValueError('gamma must be in [0, 1].')
+
+        if tau == 1:
+            return _data
+        *B, _, _ = _data.shape
+        kernel = torch.tensor(gamma, device=_data.device).pow(
+            torch.arange(tau, dtype=torch.float, device=_data.device)
+        )
+        r = _data[..., slice_dict['reward']].squeeze(-1).unsqueeze(-2)
+        if r.ndim == 2:
+            r = r.unsqueeze(0)
+        kernel = kernel.reshape(1, 1, tau)
+        r_conv = torch.nn.functional.conv1d(r, kernel).reshape(*B, -1, 1)
+        ret_length = r_conv.shape[-2]
+        return torch.cat([
+            _data[..., :ret_length, slice_dict['state']],
+            _data[..., :ret_length, slice_dict['action']],
+            r_conv.reshape(*B, ret_length, 1),
+            _data[..., tau - 1:tau - 1 + ret_length, slice_dict['next_state']],
+            _data[..., tau - 1:tau - 1 + ret_length, slice_dict['done']],
+            _data[..., :ret_length, slice_dict['log_pi']]
+        ], dim=-1)
+
+    def tau_step(self, tau: int, gamma: float) -> 'Trajectory':
+        if tau == 1:
+            return self
+        return Trajectory(
+            _data=self._tau_step(self._data, tau, gamma, self.slice_dict),
+            state_shape=self.state_shape,
+            action_shape=self.action_shape,
+            action_dtype=self.action_dtype,
+            total_reward=self.total_reward
+        )

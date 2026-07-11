@@ -1,4 +1,6 @@
+import dataclasses
 import functools
+import math
 from typing import Any, Callable, Dict, Tuple
 
 import gymnasium
@@ -40,6 +42,79 @@ RewardMapping = Callable[
     ], torch.Tensor
 ]
 
+@dataclasses.dataclass(init=False)
+class EnvironmentInfo:
+    env_fn: Callable[[], gymnasium.Env]
+
+    state_shape: Tuple[int, ...]
+    state_numel: int
+    state_dtype: torch.dtype
+    state_dtype_np: np.dtype
+
+    action_shape: Tuple[int, ...]
+    action_dtype: torch.dtype
+    action_dtype_np: np.dtype
+    action_numel: int
+
+    buffer_dim: int
+    slice_dict: Dict[str, slice]
+
+    max_len: int
+
+    def __init__(
+        self,
+        env: gymnasium.Env | None = None,
+        env_fn: Callable[[], gymnasium.Env] | None = None,
+        max_len: int | None = None
+    ):
+        if env is not None:
+            if env_fn is not None:
+                raise ValueError("Provide either env or env_fn, not both.")
+            self.env_fn = lambda: env # type: ignore
+        elif env_fn is not None:
+            self.env_fn = env_fn
+        else:
+            raise ValueError("Provide either env or env_fn.")
+
+        test_env = self.env_fn()
+
+        if test_env.observation_space is None:
+            raise ValueError('State shape is None.')
+        if test_env.action_space is None:
+            raise ValueError('Action shape is None.')
+        if test_env.action_space.dtype is None:
+            raise ValueError('Action dtype is None.')
+
+
+        self.state_shape = test_env.observation_space.shape # type: ignore
+        self.state_dtype_np = test_env.observation_space.dtype # type: ignore
+        if np.issubdtype(self.state_dtype_np, np.integer):
+            self.state_dtype = torch.long
+        else:
+            self.state_dtype = torch.float32
+        self.state_numel = math.prod(self.state_shape)
+
+        self.action_shape = test_env.action_space.shape # type: ignore
+        self.action_dtype_np = test_env.action_space.dtype # type: ignore
+        if np.issubdtype(self.action_dtype_np, np.integer):
+            self.action_dtype = torch.long
+        else:
+            self.action_dtype = torch.float32
+        self.action_numel = math.prod(self.action_shape)
+
+        if max_len is None:
+            self.max_len = test_env._max_episode_steps
+        else:
+            self.max_len = max_len
+
+        sample_traj = Trajectory.fixed_length(
+            self.max_len, self.state_shape, self.action_shape, self.action_dtype
+        )
+        self.buffer_dim = sample_traj._data.shape[-1]
+        self.slice_dict = sample_traj.slice_dict
+
+        if env is None:
+            test_env.close()
 
 @torch.no_grad()
 def run_episode(
@@ -113,20 +188,4 @@ def run_episode(
     result = result[:steps].to(device)
     result.total_reward = rewards.item()
 
-    if model.tau > 1:
-        gamma = model.gamma
-        kernel = torch.tensor(gamma, device=device).pow(
-            torch.arange(model.tau, dtype=torch.float, device=device)
-        )
-
-        r = result.reward.reshape(1, 1, -1)
-        kernel = kernel.reshape(1, 1, -1)
-        r_conv = torch.nn.functional.conv1d(r, kernel).reshape(-1)
-        ret_length = r_conv.shape[0]
-        result = Trajectory.from_tensors(
-            result.state[:ret_length], result.action[:ret_length],
-            r_conv, result.next_state[model.tau - 1:],
-            result.done[model.tau - 1:], result.log_pi[:ret_length],
-            rewards.item()
-        )
-    return result
+    return result.tau_step(model.tau, model.gamma)
