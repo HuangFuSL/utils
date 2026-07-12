@@ -116,7 +116,7 @@ class ReplayBuffer(nn.Module):
         super().__init__()
         self.size = size
         action_dtype = torch.float32 if continuous_action else torch.long
-        self.keys = ['state', 'action', 'reward', 'next_state', 'done', 'log_pi']
+        self.keys = ['state', 'action', 'reward', 'next_state', 'term', 'trunc', 'log_pi']
         self.dtypes = [torch.float32 if k != 'action' else action_dtype for k in self.keys]
         self.data: MutableMapping[str, CircularTensor] = torch.nn.ModuleDict({
             k: CircularTensor(size, dtype=dtype)

@@ -8,7 +8,7 @@ import torch
 import numpy as np
 
 from .model import BaseRLModel
-from .data import Trajectory
+from .data import Trajectory, RewardMapping, _default_shape
 
 def torch_step(env: gymnasium.Env, device: torch.device | str = 'cpu'):
     '''
@@ -26,21 +26,6 @@ def torch_step(env: gymnasium.Env, device: torch.device | str = 'cpu'):
         *ret, info = env.step(action_np)
         return [torch.as_tensor(r, device=device).float() for r in ret] + [info] # type: ignore
     return _wrapper
-
-def _default_shape(
-    s: torch.Tensor, a: torch.Tensor,
-    r: torch.Tensor, s_prime: torch.Tensor,
-    term: torch.Tensor, trunc: torch.Tensor
-) -> torch.Tensor:
-    return r
-
-RewardMapping = Callable[
-    [
-        torch.Tensor, torch.Tensor,
-        torch.Tensor, torch.Tensor,
-        torch.Tensor, torch.Tensor
-    ], torch.Tensor
-]
 
 @dataclasses.dataclass(init=False)
 class EnvironmentInfo:
@@ -173,19 +158,18 @@ def run_episode(
         action = action.detach().to('cpu', non_blocking=True)
         log_pi = log_pi.detach().to('cpu', non_blocking=True)
 
-        next_state, reward, done, time_exceed, _ = step_fn(action)
+        next_state, reward, term, trunc, _ = step_fn(action)
         rewards += reward
-        reward = reward_shape(state, action, reward, next_state, done, time_exceed)
-
-        result[steps] = (state, action, reward, next_state, done, log_pi)
+        result[steps] = (state, action, reward, next_state, term, trunc, log_pi)
 
         steps += 1
         state = next_state
 
-        if torch.any(done + time_exceed) or steps >= max_len:
+        if torch.any(term + trunc * 2) or steps >= max_len:
             break
 
     result = result[:steps].to(device)
     result.total_reward = rewards.item()
 
+    result.shape_reward(reward_shape)
     return result.tau_step(model.tau, model.gamma)

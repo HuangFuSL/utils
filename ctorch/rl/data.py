@@ -1,10 +1,35 @@
 import dataclasses
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 import copy
 import functools
 
 import torch
 
+
+def _default_shape(
+    s: torch.Tensor, a: torch.Tensor,
+    r: torch.Tensor, s_prime: torch.Tensor,
+    term: torch.Tensor, trunc: torch.Tensor
+) -> torch.Tensor:
+    return r
+
+
+RewardMapping = Callable[
+    [
+        torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor,
+        torch.Tensor, torch.Tensor
+    ], torch.Tensor
+]
+
+def calculate_mask(done: torch.Tensor, trunc: torch.Tensor | None = None) -> torch.Tensor:
+    if trunc is not None:
+        done = ((done + trunc) > 0).to(torch.int64)
+    *B, L = done.shape
+    traj_len = torch.argmax(done, dim=-1) # (*B,)
+    mask = torch.arange(L, device=done.device).expand(*B, L) \
+        < traj_len.unsqueeze(-1) # (*B, L)
+    return mask
 
 @dataclasses.dataclass()
 class Trajectory():
@@ -16,7 +41,9 @@ class Trajectory():
 
     @property
     def tensor_fields(self) -> List[str]:
-        return ['state', 'action', 'reward', 'next_state', 'done', 'log_pi']
+        return [
+            'state', 'action', 'reward', 'next_state', 'term', 'trunc', 'log_pi'
+        ]
 
     @functools.cached_property
     def state_size(self) -> int:
@@ -34,7 +61,7 @@ class Trajectory():
     def slice_dict(self) -> Dict[str, slice]:
         ret = {}
         left, right = 0, 0
-        sizes = [self.state_size, self.action_size, 1, self.state_size, 1, 1]
+        sizes = [self.state_size, self.action_size, 1, self.state_size, 1, 1, 1]
         for name, size in zip(self.tensor_fields, sizes):
             left, right = right, right + size
             ret[name] = slice(left, right)
@@ -79,12 +106,27 @@ class Trajectory():
             value.view(-1, self.state_size)
 
     @property
-    def done(self) -> torch.Tensor:
-        return self._data[:, self.slice_dict['done']].view(-1)
+    def term(self) -> torch.Tensor:
+        return self._data[:, self.slice_dict['term']].view(-1)
 
-    @done.setter
-    def done(self, value: torch.Tensor):
-        self._data[:, self.slice_dict['done']] = value.view(-1, 1)
+    @term.setter
+    def term(self, value: torch.Tensor):
+        self._data[:, self.slice_dict['term']] = value.view(-1, 1)
+
+    @property
+    def trunc(self) -> torch.Tensor:
+        return self._data[:, self.slice_dict['trunc']].view(-1)
+
+    @trunc.setter
+    def trunc(self, value: torch.Tensor):
+        self._data[:, self.slice_dict['trunc']] = value.view(-1, 1)
+
+    @property
+    def done(self) -> torch.Tensor:
+        return ((
+            self._data[:, self.slice_dict['term']] +
+            self._data[:, self.slice_dict['trunc']]
+        ) > 0).to(torch.int64)
 
     @property
     def log_pi(self) -> torch.Tensor:
@@ -98,12 +140,18 @@ class Trajectory():
         return getattr(self, key)
 
     def __iter__(self):
-        for key in self.tensor_fields:
+        for key in [
+            'state', 'action', 'reward', 'next_state', 'done', 'log_pi'
+        ]:
             yield self.get(key)
 
     @classmethod
     def fixed_length(
-        cls, length: int, state_shape: torch.Size, action_shape: torch.Size, action_dtype: torch.dtype = torch.float32, total_reward: float = float('nan'),
+        cls, length: int,
+        state_shape: torch.Size | Tuple[int, ...],
+        action_shape: torch.Size | Tuple[int, ...],
+        action_dtype: torch.dtype = torch.float32,
+        total_reward: float = float('nan'),
         pin_memory: bool = False
     ) -> 'Trajectory':
         if length <= 0:
@@ -125,11 +173,15 @@ class Trajectory():
     @classmethod
     def from_tensors(
         cls, state: torch.Tensor, action: torch.Tensor, reward: torch.Tensor,
-        next_state: torch.Tensor, done: torch.Tensor, log_pi: torch.Tensor,
+        next_state: torch.Tensor, term: torch.Tensor, trunc: torch.Tensor,
+        log_pi: torch.Tensor,
         total_reward: float = float('nan'),
     ) -> 'Trajectory':
-        if not (state.shape[0] == action.shape[0] == reward.shape[0] ==
-                next_state.shape[0] == done.shape[0] == log_pi.shape[0]):
+        if not (
+            state.shape[0] == action.shape[0] == reward.shape[0] ==
+            next_state.shape[0] == term.shape[0] == trunc.shape[0] ==
+            log_pi.shape[0]
+        ):
             raise ValueError('All tensors must have the same first dimension.')
         B = state.shape[0]
         ret = cls.fixed_length(
@@ -141,7 +193,8 @@ class Trajectory():
         ret.action = action
         ret.reward = reward
         ret.next_state = next_state
-        ret.done = done
+        ret.term = term
+        ret.trunc = trunc
         ret.log_pi = log_pi
         return ret
 
@@ -192,14 +245,15 @@ class Trajectory():
         return ret
 
     def __setitem__(self, idx: int | slice, values: tuple):
-        state, action, reward, next_state, done, log_pi = values
+        state, action, reward, next_state, term, trunc, log_pi = values
         d = self._data
         sl = self.slice_dict
         d[idx, sl['state']] = state.reshape(d[idx, sl['state']].shape)
         d[idx, sl['action']] = action.reshape(d[idx, sl['action']].shape).to(torch.float32)
         d[idx, sl['reward']] = reward.reshape(d[idx, sl['reward']].shape)
         d[idx, sl['next_state']] = next_state.reshape(d[idx, sl['next_state']].shape)
-        d[idx, sl['done']] = done.reshape(d[idx, sl['done']].shape)
+        d[idx, sl['term']] = term.reshape(d[idx, sl['term']].shape)
+        d[idx, sl['trunc']] = trunc.reshape(d[idx, sl['trunc']].shape)
         d[idx, sl['log_pi']] = log_pi.reshape(d[idx, sl['log_pi']].shape)
 
     @property
@@ -249,7 +303,8 @@ class Trajectory():
             _data[..., :ret_length, slice_dict['action']],
             r_conv.reshape(*B, ret_length, 1),
             _data[..., tau - 1:tau - 1 + ret_length, slice_dict['next_state']],
-            _data[..., tau - 1:tau - 1 + ret_length, slice_dict['done']],
+            _data[..., tau - 1:tau - 1 + ret_length, slice_dict['term']],
+            _data[..., tau - 1:tau - 1 + ret_length, slice_dict['trunc']],
             _data[..., :ret_length, slice_dict['log_pi']]
         ], dim=-1)
 
@@ -262,4 +317,32 @@ class Trajectory():
             action_shape=self.action_shape,
             action_dtype=self.action_dtype,
             total_reward=self.total_reward
+        )
+
+    @staticmethod
+    def _shape_reward(
+        _data: torch.Tensor,
+        reward_shape: RewardMapping,
+        state_shape: torch.Size | Tuple[int, ...],
+        action_shape: torch.Size | Tuple[int, ...],
+        slice_dict: Dict[str, slice]
+    ):
+        *B, L, _ = _data.shape
+        term = _data[..., slice_dict['term']].squeeze(-1).to(torch.int64)
+        trunc = _data[..., slice_dict['trunc']].squeeze(-1).to(torch.int64)
+        mask = calculate_mask(term, trunc)
+
+        _data[..., slice_dict['reward']][mask] = reward_shape(
+            _data[..., slice_dict['state']].reshape(*B, L, *state_shape),
+            _data[..., slice_dict['action']].reshape(*B, L, *action_shape),
+            _data[..., slice_dict['reward']].squeeze(-1),
+            _data[..., slice_dict['next_state']].reshape(*B, L, *state_shape),
+            term,
+            trunc
+        )[mask].unsqueeze(-1)
+
+    def shape_reward(self, reward_shape: RewardMapping):
+        self._shape_reward(
+            self._data, reward_shape, self.state_shape, self.action_shape,
+            self.slice_dict
         )

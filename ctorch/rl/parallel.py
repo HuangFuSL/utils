@@ -147,7 +147,8 @@ class EnvProcess(mp.Process):
                     # Step 5: Write other info to buffer
                     buffer_np[self.step - 1, sd['next_state']] = next_state.flatten()
                     buffer_np[self.step - 1, sd['reward']] = reward
-                    buffer_np[self.step - 1, sd['done']] = int(terminated) + int(truncated) * 2
+                    buffer_np[self.step - 1, sd['term']] = int(terminated)
+                    buffer_np[self.step - 1, sd['trunc']] = int(truncated)
 
                 # After exit
                 self.sync.trajectory_done.wait()
@@ -234,7 +235,8 @@ class ModelProcess(mp.Process):
                     right = min(left + buffer.shape[0], num_trajectories)
                     batch_size = right - left
 
-                    buffer[:batch_size, :, sd['done']].zero_()
+                    buffer[:batch_size, :, sd['term']].zero_()
+                    buffer[:batch_size, :, sd['trunc']].zero_()
                     buffer[:batch_size, :, sd['reward']].zero_()
                     buffer[:batch_size, :, sd['log_pi']].zero_()
                     status.zero_()
@@ -398,26 +400,20 @@ class SyncedEnvPool():
         action_shape = self.env_info.action_shape
         action_dtype = self.env_info.action_dtype
 
-        done = buffer[..., sd['done']].squeeze(-1).to(torch.int64)
-        raw_rewards = buffer[..., sd['reward']].clone()
-        buffer[..., sd['reward']] = reward_shape(
-            buffer[..., sd['state']].reshape(B, L, *state_shape),
-            buffer[..., sd['action']].reshape(B, L, *action_shape),
-            buffer[..., sd['reward']].squeeze(-1),
-            buffer[..., sd['next_state']].reshape(B, L, *state_shape),
-            done % 2 == 1, done >= 2
-        ).unsqueeze(-1)
-        buffer[..., sd['done']] = (done % 2 == 1).unsqueeze(-1)
+        raw_rewards = buffer[..., sd['reward']].sum(dim=(1, 2))
 
+        Trajectory._shape_reward(buffer, reward_shape, state_shape, action_shape, sd)
         buffer = Trajectory._tau_step(buffer, model.tau, model.gamma, sd)
 
         trajectories = []
-        done_flag = buffer[:, :, sd['done']].squeeze(-1)
+        done_flag = ((
+            buffer[:, :, sd['term']] + buffer[:, :, sd['trunc']]
+        ) > 0).squeeze(-1).to(torch.long)
         has_done = done_flag.any(dim=1)
         traj_len = done_flag.argmax(dim=1) + 1
         traj_len[~has_done] = L
         traj_len = traj_len.tolist()
-        total_rewards = raw_rewards.sum(dim=(1, 2)).tolist()
+        total_rewards = raw_rewards.tolist()
 
         for i, (length, r) in enumerate(zip(traj_len, total_rewards)):
             trajectories.append(Trajectory(
