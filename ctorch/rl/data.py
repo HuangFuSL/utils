@@ -55,7 +55,7 @@ class Trajectory():
 
     @functools.cached_property
     def all_size(self) -> int:
-        return self.state_size + self.action_size + 1 + self.state_size + 1 + 1
+        return self.state_size + self.action_size + 1 + self.state_size + 1 + 1 + 1
 
     @functools.cached_property
     def slice_dict(self) -> Dict[str, slice]:
@@ -126,7 +126,7 @@ class Trajectory():
         return ((
             self._data[:, self.slice_dict['term']] +
             self._data[:, self.slice_dict['trunc']]
-        ) > 0).to(torch.int64)
+        ) > 0).to(torch.int64).view(-1)
 
     @property
     def log_pi(self) -> torch.Tensor:
@@ -158,7 +158,7 @@ class Trajectory():
             raise ValueError('length must be positive.')
         state_size = functools.reduce(lambda x, y: x * y, state_shape, 1)
         action_size = functools.reduce(lambda x, y: x * y, action_shape, 1)
-        all_size = state_size + action_size + 1 + state_size + 1 + 1
+        all_size = state_size + action_size + 1 + state_size + 1 + 1 + 1
         data = torch.zeros(
             (length, all_size), dtype=torch.float32, pin_memory=pin_memory
         )
