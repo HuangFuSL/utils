@@ -219,7 +219,9 @@ class BasePolicyNetwork(BaseRLModel, TargetNetworkMixin):
             Iterator[torch.nn.Parameter]: An iterator over the parameters of the value network.
         '''
         try:
-            return self.value_model.value_parameters()
+            if hasattr(self.value_model, 'value_parameters'):
+                return self.value_model.value_parameters()
+            return self.value_model.parameters()
         except NotImplementedError:
             return iter(())
 
