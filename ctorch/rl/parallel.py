@@ -427,10 +427,20 @@ class SyncedEnvPool():
         if getattr(self, '_closed', False):
             return
         self._closed = True
+        if self.shared_params is not None:
+            del self.shared_params
         self.sync.buffer_event.set()
         self.sync.task_queue.put(None)
-        self.sync.task_queue.join()
         self.model_worker.join(5)
+        while self.sync.task_queue.qsize() > 0:
+            self.sync.task_queue.get()
+            self.sync.task_queue.task_done()
+        while True:
+            try:
+                self.sync.task_queue.task_done()
+            except:
+                break
+        self.sync.task_queue.join()
         if self.model_worker.is_alive() or any(p.is_alive() for p in self.env_workers):
             self.sync.abort()
             for p in self.env_workers:
