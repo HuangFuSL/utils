@@ -66,9 +66,9 @@ PID_FILE="$STATE_DIR/dispatcher.pid"
 
 SEQ_FILE="$STATE_DIR/seq"
 
-SESSION_KEY="${SELF_PATH//\//_}"
-SESSION_KEY="${SESSION_KEY//[^[:alnum:]_.-]/_}"
-SESSION_NAME="dispatcher${SESSION_KEY}"
+# Session name has a max length, use hash to ensure uniqueness
+SESSION_KEY="$(printf '%s' "$SELF_PATH" | md5sum | cut -d' ' -f1)"
+SESSION_NAME="dispatcher_${SESSION_KEY}"
 
 DEFAULT_IDLE_TIMEOUT="${IDLE_TIMEOUT:-300}"
 POLL_INTERVAL="${POLL_INTERVAL:-1}"
