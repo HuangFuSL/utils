@@ -141,7 +141,7 @@ class Trajectory():
 
     def __iter__(self):
         for key in [
-            'state', 'action', 'reward', 'next_state', 'done', 'log_pi'
+            'state', 'action', 'reward', 'next_state', 'term', 'log_pi'
         ]:
             yield self.get(key)
 
