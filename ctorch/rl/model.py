@@ -69,7 +69,7 @@ class TargetNetworkMixin(nn.Module):
         self._target.requires_grad_(False)
         self._target.eval()
         self._target._target = None  # Avoid nested targets
-        self._target.setup_target = lambda: None  # Disable further calls
+        self._target.setup_target = None  # Disable further calls
 
     @property
     def target(self) -> Self:
