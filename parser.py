@@ -20,7 +20,7 @@ import json
 import os
 import sys
 import typing
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Protocol, Sequence, Type, TypeVar, Union, cast, overload, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol, Sequence, Type, TypeVar, Union, overload, runtime_checkable
 
 T = TypeVar('T', covariant=True)
 
@@ -55,6 +55,13 @@ def _infer_argtype(tp: Any):
     origin = typing.get_origin(tp)
     if tp in (int, float, str, bool):
         return tp
+    if origin is Literal:
+        args = typing.get_args(tp)
+        if all(isinstance(a, int) for a in args):
+            return int
+        if all(isinstance(a, float) for a in args):
+            return float
+        return str
     if origin in (list, tuple, set):
         return str
 
@@ -71,8 +78,14 @@ def _convert_value(raw: str, tp):
     if tp is bool:
         # Never really reach heres
         return raw.lower() not in {'false', '0', 'no'}
-    if origin in (list, tuple, set, dict):
-        return json.loads(raw)
+    if origin in (list, tuple, set, dict) or tp in (list, tuple, set, dict):
+        result = json.loads(raw)
+        target = origin if origin in (tuple, set) else tp
+        if target is tuple:
+            return tuple(result)
+        if target is set:
+            return set(result)
+        return result
     # Any other type, just return as is
     return raw
 
@@ -262,10 +275,14 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
                         help=help_text + ' (set to True)'
                     )
                 else:
+                    field_type = _type_hints[f.name]
+                    field_origin = typing.get_origin(field_type)
+                    choices = typing.get_args(field_type) if field_origin is Literal else None
                     parser.add_argument(
                         argname,
                         dest=name,
                         type=argtype if argtype is not str else str,
+                        choices=choices,
                         default=Const.MISSING_IN_CLI,
                         help=help_text +
                         (f' (default: {default})' if default is not None else '')
