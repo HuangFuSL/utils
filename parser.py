@@ -20,9 +20,14 @@ import json
 import os
 import sys
 import typing
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol, Sequence, Type, TypeVar, Union, overload, runtime_checkable
+from typing import Any, Callable, Dict, Iterable, Literal, Optional, Sequence, Type, TypeVar, Union, overload
 
-T = TypeVar('T', covariant=True)
+try:
+    from typing import dataclass_transform
+except ImportError:
+    from typing_extensions import dataclass_transform
+
+T = TypeVar('T')
 
 try:
     import yaml
@@ -38,6 +43,13 @@ except ImportError:
 
 class Const(enum.Enum):
     MISSING_IN_CLI = -1
+
+def _is_enum(tp: Any) -> bool:
+    return isinstance(tp, type) and issubclass(tp, enum.Enum)
+
+def _is_container(tp: Any) -> bool:
+    origin = typing.get_origin(tp)
+    return origin in (list, set, tuple) or tp in (list, set, tuple)
 
 def _strip_optional(tp: Any) -> Any:
     '''Union[..., None] ➜ ...'''
@@ -61,15 +73,26 @@ def _infer_argtype(tp: Any):
             return int
         if all(isinstance(a, float) for a in args):
             return float
-        return str
-    if origin in (list, tuple, set):
-        return str
+        if all(isinstance(a, str) for a in args):
+            return str
+        raise TypeError(f'Literal with mixed types is not supported: {tp}')
+    if origin in (list, set):
+        args = typing.get_args(tp)
+        return _infer_argtype(args[0]) if args else str
+    if origin is tuple:
+        args = typing.get_args(tp)
+        if not args:
+            return str
+        if len(args) == 2 and args[1] is Ellipsis:
+            return _infer_argtype(args[0])
+        types = {_infer_argtype(a) for a in args}
+        return types.pop() if len(types) == 1 else str
 
     return str
 
 
 def _convert_value(raw: str, tp):
-    ''' Convert a string value to the specified type. '''
+    ''' Convert a string value (or list from nargs) to the specified type. '''
     tp = _strip_optional(tp)
     origin = typing.get_origin(tp)
 
@@ -78,16 +101,41 @@ def _convert_value(raw: str, tp):
     if tp is bool:
         # Never really reach heres
         return raw.lower() not in {'false', '0', 'no'}
+    if _is_enum(tp):
+        return tp[raw] if isinstance(raw, str) else tp(raw)
     if origin in (list, tuple, set, dict) or tp in (list, tuple, set, dict):
-        result = json.loads(raw)
+        if isinstance(raw, list):
+            result = raw
+        elif isinstance(raw, str):
+            result = json.loads(raw)
+        else:
+            result = raw
+
+        args = typing.get_args(tp)
+        is_homogeneous = (
+            origin in (list, set) or
+            (origin is tuple and len(args) == 2 and args[1] is Ellipsis)
+        )
+        if is_homogeneous and args:
+            inner = args[0]
+            result = [_convert_value(v, inner) for v in result]
+
         target = origin if origin in (tuple, set) else tp
         if target is tuple:
-            return tuple(result)
+            return _cast_tuple(result, tp)
         if target is set:
             return set(result)
         return result
     # Any other type, just return as is
     return raw
+
+
+def _cast_tuple(raw, tp):
+    '''Convert a list to tuple, with per-element casting for heterogeneous tuples.'''
+    args = typing.get_args(tp)
+    if not args or (len(args) == 2 and args[1] is Ellipsis):
+        return tuple(raw)
+    return tuple(_convert_value(r, t) for r, t in zip(raw, args))
 
 
 def _build_parser(*parsers: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -97,7 +145,7 @@ def _build_parser(*parsers: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(parents=parsers)
     parser.add_argument(
         '--config',
-        type=str, default='', nargs='*',
+        type=str, nargs='*',
         help='Path to the configuration file'
     )
     return parser
@@ -113,72 +161,35 @@ def _handle_config_file(ns: argparse.Namespace) -> Dict[str, Any]:
                 config_data = json.loads(content)
             elif suffix in ('.yaml', '.yml'):
                 if not YAML_AVAILABLE:
-                    raise ImportError(
-                        'YAML support is not available. Install PyYAML to use YAML files.')
+                    raise ImportError('YAML support is not available. Install PyYAML to use YAML files.')
                 config_data = yaml.load(content, Loader=yaml.SafeLoader)
             elif suffix in ('.toml',):
                 if not TOML_AVAILABLE:
-                    raise ImportError(
-                        'TOML support is not available. Install tomllib to use TOML files.')
+                    raise ImportError('TOML support is not available. Install tomllib to use TOML files.')
                 config_data = tomllib.loads(content)
             else:
-                raise ValueError(
-                    'Unsupported config file format. Use .json, .yaml, or .toml.')
+                raise ValueError('Unsupported config file format. Use .json, .yaml, or .toml.')
             if not isinstance(config_data, dict):
                 raise ValueError('Config file must contain a dictionary.')
-            # Override all all command line arguments with config file values
             kw |= config_data
         return kw
     return {}
 
-if TYPE_CHECKING:
-    @runtime_checkable
-    class _DECORATED(Any, Protocol[T]):
-        @classmethod
-        def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
-
-        @classmethod
-        def parse_namespace(
-            cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
-            prefix: str = ''
-        ) -> T: ...
-
-        @classmethod
-        def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
-else:
-    @runtime_checkable
-    class _DECORATED(Protocol[T]):
-        @classmethod
-        def get_parser(cls, prefix: str = '') -> argparse.ArgumentParser: ...
-
-        @classmethod
-        def parse_namespace(
-            cls, ns: argparse.Namespace, kw: Dict[str, Any] | None = None,
-            prefix: str = ''
-        ) -> T: ...
-
-        @classmethod
-        def parse_args(cls, argv: Sequence[str] | None = None) -> T: ...
-
-
+@dataclass_transform()
 @overload
-def auto_cli(
-    cls: Type[T], /, **decorator_kw: Any
-) -> Type[_DECORATED[T]]:
-    ...
+def auto_cli(cls: Type[T], /) -> Type[T]: ...
 
+@dataclass_transform()
 @overload
-def auto_cli(
-    cls: None = None, /, **decorator_kw: Any
-) -> Callable[[Type[T]], Type[_DECORATED[T]]]:
-    ...
+def auto_cli(cls: None = None, /) -> Callable[[Type[T]], Type[T]]: ...
 
-def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T]] | Callable[[Type[T]], Type[_DECORATED[T]]]:
+@dataclass_transform()
+def auto_cli(cls: Type[T] | None = None, /) -> Type[T] | Callable[[Type[T]], Type[T]]:
     '''
     Automatically generates an argument parser for a dataclass with type hints.
-    Field types, including basic types, and ``Optional`` are automatically
-    recognized and converted corresponding argument types. Complex types like
-    lists and dictionaries can be input as strings in json format.
+    Field types, including basic types, Enum, Literal, and ``Optional`` are automatically
+    recognized. Container types (list, set, tuple) use nargs for native multi-value
+    input. Dictionaries are parsed from JSON strings.
 
     Apart from the fields of the dataclass, ``auto_cli`` also adds a ``--config``
     argument to the parser for loading configuration settings from a json, yaml,
@@ -231,8 +242,8 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
         Type[cls]: The decorated class.
     '''
 
-    @functools.wraps(auto_cli)
-    def wrap(datacls: Type[T]) -> Type[_DECORATED[T]]:
+    @functools.wraps(auto_cli, assigned=('__name__', '__qualname__'))
+    def wrap(datacls: Type[T]) -> Type[T]:
         _type_hints: Dict[str, Any] = typing.get_type_hints(
             datacls, globalns=vars(sys.modules[datacls.__module__])
         )
@@ -262,30 +273,63 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
                     default = None
 
                 help_text = f.metadata.get('help', '')
+                default_str = ''
+                if default is not None:
+                    default_str = f' (default: {default.name})' if _is_enum(type(default)) else f' (default: {default})'
 
                 if argtype is bool:
-                    # bool ➜ --flag / --no-flag
-                    parser.add_argument(
+                    # bool ➜ --flag / --no-flag (mutually exclusive)
+                    group = parser.add_mutually_exclusive_group(
+                        required=f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+                    )
+                    group.add_argument(
                         no_argname, dest=name, action='store_false', default=Const.MISSING_IN_CLI,
                         help=help_text + ' (set to False)'
                     )
-                    parser.add_argument(
+                    group.add_argument(
                         argname, dest=name, action='store_true',
                         default=Const.MISSING_IN_CLI,
                         help=help_text + ' (set to True)'
                     )
                 else:
                     field_type = _type_hints[f.name]
-                    field_origin = typing.get_origin(field_type)
-                    choices = typing.get_args(field_type) if field_origin is Literal else None
+                    field_type_stripped = _strip_optional(field_type)
+                    field_origin = typing.get_origin(field_type_stripped)
+                    field_args = typing.get_args(field_type_stripped)
+                    nargs = None
+                    choices = None
+
+                    has_default = f.default is not dataclasses.MISSING or f.default_factory is not dataclasses.MISSING
+                    if field_origin in (list, set):
+                        nargs = '*' if has_default else '+'
+                    elif field_origin is tuple:
+                        if not field_args:
+                            pass
+                        elif len(field_args) == 2 and field_args[1] is Ellipsis:
+                            nargs = '*' if has_default else '+'
+                        else:
+                            nargs = len(field_args)
+
+                    if field_origin is Literal:
+                        choices = field_args
+                    elif _is_enum(field_type_stripped):
+                        choices = [e.name for e in field_type_stripped]
+                    elif nargs is not None and field_args:
+                        inner = field_args[0]
+                        inner_origin = typing.get_origin(inner)
+                        if inner_origin is Literal:
+                            choices = typing.get_args(inner)
+                        elif _is_enum(inner):
+                            choices = [e.name for e in inner]
+
                     parser.add_argument(
                         argname,
                         dest=name,
                         type=argtype if argtype is not str else str,
+                        nargs=nargs,
                         choices=choices,
                         default=Const.MISSING_IN_CLI,
-                        help=help_text +
-                        (f' (default: {default})' if default is not None else '')
+                        help=help_text + default_str
                     )
             return parser
 
@@ -316,8 +360,8 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
                     else:
                         raise ValueError(f'Missing required argument: {name}')
                 type_ = _type_hints[f.name]
-                # JSON deserialization for complex types
-                if isinstance(val, str):
+                # JSON deserialization for complex types and enum
+                if isinstance(val, str) or _is_enum(type_) or _is_container(type_):
                     val = _convert_value(val, type_)
                 new_kw[f.name] = val
             return cls_(**new_kw)
@@ -333,32 +377,34 @@ def auto_cli(cls: Type[T] | None = None, /, **decorator_kw) -> Type[_DECORATED[T
             - Basic types: int/float/str
             - bool: --flag / --no-flag
             - Optional[T]
-            - list/tuple/set/dict: Parse as JSON strings
+            - list/tuple/set: Multi-value input via nargs
+            - dict: Parse as JSON string
             - Configuration file: --config <path>
             '''
+            if any(f.name == 'config' for f in dataclasses.fields(cls_)):
+                raise ValueError(
+                    'The dataclass has a field named "config", which conflicts with the --config argument. '
+                    'Please rename the field or use a different dataclass.'
+                )
             parser = _build_parser(cls_.get_parser())
 
             ns = parser.parse_args(argv)
             kw = _handle_config_file(ns)
             for name in kw:
                 type_ = _type_hints.get(name, str)
-                if isinstance(kw[name], str):
+                if isinstance(kw[name], str) or _is_enum(type_) or _is_container(type_):
                     kw[name] = _convert_value(kw[name], type_)
 
             return cls_.parse_namespace(ns, kw)
 
         datacls.parse_args = parse_args
 
-        if TYPE_CHECKING:
-            class _TYPE_HINTS(_DECORATED[datacls],datacls): ...
-            return _TYPE_HINTS
-
         return datacls
 
     return wrap if cls is None else wrap(cls)
 
 def get_all_parser(
-    dataclass = None, **dataclasses
+    dataclass = None, **dataclasses_
 ):
     '''
     Returns a combined ``argparse.ArgumentParser`` that merges the parsers of
@@ -375,18 +421,39 @@ def get_all_parser(
     Returns:
         argparse.ArgumentParser: An argument parser that includes all specified dataclasses.
     '''
-    dataclasses = dataclasses.copy()
-    if dataclass is not None:
-        dataclasses[''] = dataclass
-    parsers = []
-    for name, datacls in dataclasses.items():
-        parsers.append(
-            datacls.get_parser(prefix=name)
+    if dataclass is not None and dataclasses.is_dataclass(dataclass) and any(
+        f.name == 'config' for f in dataclasses.fields(dataclass)
+    ):
+        raise ValueError(
+            'The dataclass has a field named "config", which conflicts with the --config argument. '
+            'Please rename the field or use a different dataclass.'
         )
+    dataclasses_ = dataclasses_.copy()
+    if dataclass is not None:
+        dataclasses_[''] = dataclass
+    parsers = []
+    for name, datacls in dataclasses_.items():
+        parsers.append(datacls.get_parser(prefix=name))
     return _build_parser(*parsers)
 
+@overload
 def parse_all_args(
-    cli_args: List[str] | Any | None = None, dataclass: Any | None = None, **dataclasses: Any
+    cli_args: Iterable[str],
+    dataclass: Type | None = None,
+    **dataclasses_: Type
+) -> Dict[str, Any]: ...
+
+@overload
+def parse_all_args(
+    cli_args: Type | None = None,
+    dataclass: None = None,
+    **dataclasses_: Type
+) -> Dict[str, Any]: ...
+
+def parse_all_args(
+    cli_args: Iterable[str] | Type | None = None,
+    dataclass: Type | None = None,
+    **dataclasses_: Type
 ) -> Dict[str, Any]:
     '''
     Parse command line arguments into a dictionary of dataclass instances.
@@ -439,27 +506,26 @@ def parse_all_args(
         additional_phone: '1234567890'
 
     Args:
-        cli_args (List[str] | Any | None): Command line arguments to parse. If None, uses ``sys.argv[1:]``.
-        dataclass (Any | None): A single dataclass to include in the parsing.
-        **dataclasses (Any): Additional dataclasses to include in the parsing.
+        cli_args (Iterable[str] | None): Command line arguments to parse. If None, uses ``sys.argv[1:]``.
+        dataclass (Type | None): A single dataclass to include in the parsing.
+        **dataclasses (Type): Additional dataclasses to include in the parsing.
 
     Returns:
         Dict[str, Any]: A dictionary where keys are dataclass names and values are instances of those dataclasses.
     '''
-    pass_down = None
-    if isinstance(cli_args, list) or cli_args is None:
+    if dataclasses.is_dataclass(cli_args):
+        dataclass = cli_args
+        pass_down = None
+    else:
         if cli_args is None:
             cli_args = sys.argv[1:]
-        pass_down = cli_args
-    else:
-        pass_down = None
-        dataclass = cli_args
+        pass_down = list(cli_args) # type: ignore
 
-    parser = get_all_parser(dataclass, **dataclasses)
+    parser = get_all_parser(dataclass, **dataclasses_)
     ns = parser.parse_args(pass_down)
     kw = _handle_config_file(ns)
     result = {}
-    for name, datacls in dataclasses.items():
+    for name, datacls in dataclasses_.items():
         result[name] = datacls.parse_namespace(ns, kw, prefix=name)
     if dataclass is not None:
         result[''] = dataclass.parse_namespace(ns, kw, prefix='')

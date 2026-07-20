@@ -88,9 +88,7 @@ class TestParser(unittest.TestCase):
 
         parser = Args.get_parser()
         # Test specified value
-        ns = parser.parse_args([
-            '--items', '[1, 2, 3]'
-        ])
+        ns = parser.parse_args(['--items', '1', '2', '3'])
         obj = Args.parse_namespace(ns)
         self.assertEqual(obj.items, [1, 2, 3])
 
@@ -162,7 +160,7 @@ class TestParser(unittest.TestCase):
             '--name', 'Alice',
             '--age', '30',
             '--no-active',
-            '--tags', '["tag1", "tag2"]',
+            '--tags', 'tag1', 'tag2',
             '--params', '{"param1": "value1", "param2": "value2"}'
         ])
         obj = Args.parse_namespace(ns)
@@ -199,12 +197,12 @@ class TestParser(unittest.TestCase):
             ns = parser.parse_args(['--name', 'Alice', '--age', 'twenty'])
             Args.parse_namespace(ns)
 
-        # Invalid JSON for list
-        with self.assertRaises(json.JSONDecodeError):
-            ns = parser.parse_args([
-                '--name', 'Alice', '--age', '30', '--tags', '[1, 2, 3'
-            ])
-            Args.parse_namespace(ns)
+        # Invalid value in list element (treated as JSON string, no longer decoded)
+        ns = parser.parse_args([
+            '--name', 'Alice', '--age', '30', '--tags', 'tag1', 'tag2'
+        ])
+        obj = Args.parse_namespace(ns)
+        self.assertEqual(obj.tags, ['tag1', 'tag2'])
 
 
 @auto_cli
@@ -317,7 +315,7 @@ params_str: '{"param3": "value3", "param4": "value4"}'
             self.assertTrue(obj.active)
             obj = self.cls.parse_args(['--config', config_path, '--name', 'Bob'])
             self.assertEqual(obj.name, 'Bob')
-            obj = self.cls.parse_args(['--config', config_path, '--tags', '["tag3"]'])
+            obj = self.cls.parse_args(['--config', config_path, '--tags', 'tag3'])
             self.assertEqual(obj.tags, ['tag3'])
             obj = self.cls.parse_args(['--config', config_path, '--params', '{"param3": "value3"}'])
             self.assertEqual(obj.params, {'param3': 'value3'})
@@ -378,7 +376,7 @@ params_str = '{"param3": "value3", "param4": "value4"}'
             self.assertTrue(obj.active)
             obj = self.cls.parse_args(['--config', config_path, '--name', 'Bob'])
             self.assertEqual(obj.name, 'Bob')
-            obj = self.cls.parse_args(['--config', config_path, '--tags', '["tag3"]'])
+            obj = self.cls.parse_args(['--config', config_path, '--tags', 'tag3'])
             self.assertEqual(obj.tags, ['tag3'])
             obj = self.cls.parse_args(['--config', config_path, '--params', '{"param3": "value3"}'])
             self.assertEqual(obj.params, {'param3': 'value3'})
