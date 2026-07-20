@@ -135,6 +135,10 @@ def _cast_tuple(raw, tp):
     args = typing.get_args(tp)
     if not args or (len(args) == 2 and args[1] is Ellipsis):
         return tuple(raw)
+    if len(raw) != len(args):
+        raise ValueError(
+            f'Expected {len(args)} elements for type {tp}, got {len(raw)}'
+        )
     return tuple(_convert_value(r, t) for r, t in zip(raw, args))
 
 
