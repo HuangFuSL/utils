@@ -69,7 +69,8 @@ class EnvProcess(mp.Process):
         self.output_buffer = self.sync.output_buffer[worker_id]
 
     def get_action(self) -> Tuple[np.ndarray, np.ndarray]:
-        match WorkerSignal(self.sync.worker_task.wait_do(self.worker_id)):
+        sig = self.sync.worker_task.wait_do(self.worker_id)
+        match WorkerSignal(sig):
             case WorkerSignal.ACTION:
                 action = self.sync.actions[self.worker_id].numpy().copy()
                 log_pi = self.sync.log_pi[self.worker_id].numpy().copy()
@@ -121,6 +122,7 @@ class EnvProcess(mp.Process):
                             self.sync.main_task.do(self.worker_id)
                             traj_done = True
                             self.set_state(None)
+                            break
                         else:
                             output_buffer_np[step, sd['state']] = next_state.flatten()
                             self.set_state(next_state)
@@ -240,10 +242,6 @@ class ModelProcess(mp.Process):
                 }, strict=True)
             # Notify workers
             if reset:
-                cleaned_workers = self.cleanup_stale()
-                self.get_state(None)
-                self.reset_workers -= cleaned_workers
-                self.cleanup_stale(self.reset_workers)
                 self.reset_workers.update(range(self.num_workers))
                 self.set_reset()
                 self.remaining_trajs = num_trajs
