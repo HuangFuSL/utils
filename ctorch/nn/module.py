@@ -1,5 +1,5 @@
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Generator, List, Mapping, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Generator, Iterable, List, Mapping, Sequence, Tuple
 
 import torch
 
@@ -92,6 +92,24 @@ class Module(torch.nn.Module):
             method = cls.__dict__.get(method_name, None)
             if method is not None:
                 setattr(cls, method_name, torch.jit.unused(method))
+
+    @torch.jit.unused
+    def get_flat_params(self, params: Iterable[torch.nn.Parameter | torch.Tensor] | None = None):
+        if params is None:
+            params = self.parameters()
+        return torch.cat([p.contiguous().view(-1) for p in params])
+
+    @torch.jit.unused
+    def set_flat_params(self, flat_params: torch.Tensor):
+        if flat_params.numel() != self.num_parameters:
+            raise ValueError(
+                f'Expected flat_params of size {self.num_parameters}, got {flat_params.numel()}'
+            )
+        left, right = 0, 0
+        for p in self.parameters():
+            right += p.numel()
+            p.data.copy_(flat_params[left:right].view_as(p))
+            left = right
 
     @torch.jit.unused
     def output_shape(
