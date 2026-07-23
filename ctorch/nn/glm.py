@@ -273,6 +273,86 @@ class LogisticRegression(BaseGLM):
             predictors.logit, target.float(), reduction='none'
         )
 
+def GaussianMixture(
+    K: int, transform: Transform = torch.nn.functional.softplus
+) -> BaseGLM:
+    '''
+    Gaussian mixture model.
+
+    Args:
+        K (int): The number of gaussian components.
+        transform: Transform applied to gaussian standard deviation.
+
+    Shapes:
+        * Input shape: (\\*, in_features).
+        * Output shape: (\\*).
+        * Target shape: (\\*).
+    '''
+    if K < 2:
+        raise ValueError(f'Number of classes K must be at least 2, got K={K}.')
+    t = collections.namedtuple(
+        'GaussianMixturePredictors',
+        [f'weight_{i}' for i in range(K)] +
+        [f'mu_{i}' for i in range(K)] + [f'std_{i}' for i in range(K)]
+    )
+
+    class GaussianMixtureImpl(BaseGLM):
+        predictor_tuple_type = t
+
+        def __init__(self):
+            super().__init__()
+            for i in range(K):
+                self._register_predictor(f'weight_{i}', Predictor(
+                    PredictorMode.SAMPLEWISE
+                ))
+                self._register_predictor(f'mu_{i}', Predictor(
+                    PredictorMode.SAMPLEWISE
+                ))
+                self._register_predictor(f'std_{i}', Predictor(
+                    PredictorMode.SAMPLEWISE, raw_transform=transform
+                ))
+
+            self._finalize_register_predictors()
+
+        def output_shape(
+            self, *args: torch.Size | None, **kwargs: torch.Size | None
+        ) -> torch.Size | None:
+            x_shape = args[0]
+            if x_shape is None:
+                return None
+            return torch.Size(x_shape[:-1])
+
+        def _guard_predictors(self, predictors: t) -> str | None:
+            if torch.any(torch.stack(predictors[-K:], dim=-1) <= 0):
+                return 'Standard deviation for GaussianMixture must be positive.'
+
+        def _guard_target(self, target: torch.Tensor) -> str | None:
+            if not target.is_floating_point():
+                return 'Target tensor for GaussianMixture must be a floating point tensor.'
+
+        def inverse_link(self, predictors: t) -> torch.Tensor:
+            weight = torch.stack(predictors[:K], dim=-1).softmax(dim=-1)
+            mu = torch.stack(predictors[K:-K], dim=-1)
+            return (mu * weight).sum(dim=-1)
+
+        def sample(self, predictors: t) -> torch.Tensor:
+            weight = torch.stack(predictors[:K], dim=-1).softmax(dim=-1)
+            sample_idx = torch.multinomial(weight, num_samples=1, replacement=True)
+            mu = torch.stack(predictors[K:-K], dim=-1).gather(-1, sample_idx)
+            std = torch.stack(predictors[-K:], dim=-1).gather(-1, sample_idx)
+            return (mu + std * torch.randn_like(mu, device=mu.device)).squeeze(-1)
+
+        def negative_log_likelihood(self, predictors, target) -> torch.Tensor:
+            log_weight = torch.stack(predictors[:K], dim=-1).log_softmax(dim=-1)
+            mu = torch.stack(predictors[K:-K], dim=-1)
+            std = torch.stack(predictors[-K:], dim=-1)
+            return -(
+                log_weight +
+                torch.distributions.Normal(mu, std).log_prob(target.unsqueeze(-1))
+            ).logsumexp(dim=-1)
+
+    return GaussianMixtureImpl()
+
 
 def DirichletRegression(
     K: int, transform: Transform = torch.nn.functional.softplus
