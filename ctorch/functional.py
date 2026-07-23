@@ -2,7 +2,7 @@
 `utils.ctorch.functional` - Functional utilities for PyTorch tensors.
 '''
 import math
-from typing import Callable, Tuple
+from typing import Callable, Literal, Tuple
 
 import torch
 import torch.linalg
@@ -532,3 +532,42 @@ def gaussian_process(
     v = torch.linalg.solve_triangular(L, sigma_21.T, upper=False)
     sigma = sigma_22 - v.T @ v
     return mu, sigma
+
+def sliding_window_mask(
+    length: int, left_size: int | None, right_size: int | None, is_causal: bool = False,
+    output_ndim: int = 2, device: torch.device | str | None = None,
+    dtype: Literal['bool', 'float'] = 'bool'
+) -> torch.Tensor:
+    '''
+    Generate a sliding window mask for a sequence of given length.
+
+    Args:
+        length (int): Length of the sequence.
+        left_size (int | None): Size of the left context window. None means no sliding.
+        right_size (int | None): Size of the right context window. None means no sliding.
+        is_causal (bool): If True, the mask will be causal, meaning that each position can only attend to previous positions. If False, the mask will be bi-directional.
+        output_ndim (int): The number of dimensions of the output mask. Default is 2. When output_ndim > 2, the mask will be broadcasted to (1, ..., 1, length, length).
+        device (torch.device | str | None): The device on which to create the mask. If None, the mask will be created on the default device.
+        dtype (Literal['bool', 'float']): The data type of the output mask.
+
+    Returns:
+        torch.Tensor: A boolean mask tensor of shape (..., length, length). Masked positions are False or -inf, while unmasked positions are True or 0.
+    '''
+    if is_causal:
+        right_size = 0
+    x, y = torch.arange(length, device=device), torch.arange(length, device=device)
+    x, y = x.unsqueeze(1), y.unsqueeze(0)
+    match left_size, right_size:
+        case None, None:
+            ret = torch.ones(length, length, dtype=torch.bool, device=device)
+        case None, _:
+            ret = (y <= x + right_size)
+        case _, None:
+            ret = (y >= x - left_size)
+        case _, _:
+            ret = (y >= x - left_size) & (y <= x + right_size)
+    if dtype == 'float':
+        masked_out = ~ret
+        ret = masked_out.to(torch.float32)
+        ret[masked_out] = float('-inf')
+    return ret.reshape(*([1] * (output_ndim - 2)), length, length)
