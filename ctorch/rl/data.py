@@ -28,7 +28,7 @@ def calculate_mask(done: torch.Tensor, trunc: torch.Tensor | None = None) -> tor
     *B, L = done.shape
     traj_len = torch.argmax(done, dim=-1) # (*B,)
     mask = torch.arange(L, device=done.device).expand(*B, L) \
-        < traj_len.unsqueeze(-1) # (*B, L)
+        <= traj_len.unsqueeze(-1) # (*B, L)
     return mask
 
 @dataclasses.dataclass()
