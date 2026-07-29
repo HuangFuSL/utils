@@ -4,12 +4,27 @@ Miscellaneous utility scripts.
 
 | Script | Language | Description |
 |--------|----------|-------------|
+| `.bash_aliases` | Bash | Linux process inspection tools: `pinfo`, `pstats`, `pginfo`, `pcinfo`, `showmem` |
 | `gather.sh` | Bash | Parallel command executor with concurrency control |
 | `run_nb.py` | Python | Execute Jupyter notebooks in parallel with frequency control |
 | `taskq.sh` | Bash | Task queue dispatcher with `screen`/`nohup` backend |
 | `vima.sh` | Bash | Transparent `vim` wrapper with archive writeback |
 
 ---
+
+### .bash_aliases
+
+Linux-only shell aliases and functions for process inspection. Sources safely on non-Linux (skips with a message).
+
+```bash
+showmem              # RSS summary by user
+memtop [user]        # top-20 processes by RSS for a user (default: huangfusl)
+
+pinfo <pid> [pid...] # detailed per-process info, color-coded CPU/MEM/RSS/VSZ
+pstats <pid> [sec]   # sample a PID for N seconds, stats summary (mean/max/min/std)
+pginfo <pid>         # process tree view with DFS walk, target PID highlighted
+pcinfo <pid>         # direct children of a PID
+```
 
 ### gather.sh
 
