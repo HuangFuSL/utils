@@ -12,17 +12,30 @@ fi
 join() {
   local pids=("$@")
   ((${#pids[@]})) || { echo "Usage: join <pid> [pid...]" >&2; return 1; }
-  local remain=("${pids[@]}")
+  local -A starttimes
   local total=${#pids[@]}
+  local remain=("${pids[@]}")
   local done=()
+
+  # snapshot starttime for each PID
+  local pid st
+  for pid in "${pids[@]}"; do
+    st=$(awk '{print $22}' /proc/"$pid"/stat 2>/dev/null) || {
+      echo "[join] PID $pid does not exist" >&2
+      continue
+    }
+    starttimes[$pid]=$st
+  done
 
   while ((${#remain[@]})); do
     local new_remain=()
     for pid in "${remain[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then
+      local current_st
+      current_st=$(awk '{print $22}' /proc/"$pid"/stat 2>/dev/null) || { done+=("$pid"); continue; }
+      if [[ "${starttimes[$pid]}" == "$current_st" ]]; then
         new_remain+=("$pid")
       else
-        done+=("$pid")
+        done+=("$pid")  # PID recycled — original process is dead
       fi
     done
     remain=("${new_remain[@]}")

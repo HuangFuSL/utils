@@ -21,12 +21,12 @@ Linux-only shell aliases and functions for process inspection.
 # Script aliases (all platforms)
 catlsa               # → catlsa.py
 gather               # → gather.sh
-join <pid> [pid...]  # wait for processes to exit
 run_nb               # → run_nb.py
 taskq                # → taskq.sh
 vima                 # → vima.sh
 
 # Process inspection (Linux only)
+join <pid> [pid...]  # wait for processes to exit (PID-reuse safe)
 showmem              # RSS summary by user
 memtop [user]        # top-20 processes by RSS for a user (default: huangfusl)
 
