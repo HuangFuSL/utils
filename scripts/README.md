@@ -5,6 +5,7 @@ Miscellaneous utility scripts.
 | Script | Language | Description |
 |--------|----------|-------------|
 | `.bash_aliases` | Bash | Linux process inspection tools: `pinfo`, `pstats`, `pginfo`, `pcinfo`, `showmem` |
+| `catlsa.py` | Python | Transparent `cat`/`ls` wrapper with archive support (read-only) |
 | `gather.sh` | Bash | Parallel command executor with concurrency control |
 | `run_nb.py` | Python | Execute Jupyter notebooks in parallel with frequency control |
 | `taskq.sh` | Bash | Task queue dispatcher with `screen`/`nohup` backend |
@@ -18,6 +19,7 @@ Linux-only shell aliases and functions for process inspection.
 
 ```bash
 # Script aliases (all platforms)
+catlsa               # → catlsa.py
 gather               # → gather.sh
 run_nb               # → run_nb.py
 taskq                # → taskq.sh
@@ -31,6 +33,17 @@ pinfo <pid> [pid...] # detailed per-process info, color-coded CPU/MEM/RSS/VSZ
 pstats <pid> [sec]   # sample a PID for N seconds, stats summary (mean/max/min/std)
 pginfo <pid>         # process tree view with DFS walk, target PID highlighted
 pcinfo <pid>         # direct children of a PID
+```
+
+### catlsa.py
+
+Transparent `cat`/`ls` wrapper with archive support. Walks a path left-to-right, resolving archives (tar, zip, 7z, gz, bz2, xz) and auto-dispatching the leaf: file → `cat`, directory → `ls`. Only necessary files are extracted — read-only, archives are never modified.
+
+```bash
+catlsa project.tar.gz/src/main.py          # cat the file
+catlsa project.tar.gz/src/                 # list the directory
+catlsa outer.zip/inner.tar.gz/config.yml   # nested archives
+catlsa data.tar.gz                         # list root of archive
 ```
 
 ### gather.sh

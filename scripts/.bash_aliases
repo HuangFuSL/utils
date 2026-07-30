@@ -5,6 +5,7 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   alias run_nb="python3 $_BASH_ALIASES_DIR/run_nb.py"
   alias taskq="$_BASH_ALIASES_DIR/taskq.sh"
   alias vima="$_BASH_ALIASES_DIR/vima.sh"
+  alias catlsa="python3 $_BASH_ALIASES_DIR/catlsa.py"
 fi
 
 # Only load on Linux — /proc, GNU ps flags, etc.
