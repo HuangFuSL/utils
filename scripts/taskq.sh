@@ -760,7 +760,11 @@ main() {
     *)
       submit_job "$DEFAULT_IDLE_TIMEOUT" "$@"
       printf 'queued job: %s\n' "$SUBMITTED_JOB_ID"
-      printf 'dispatcher backend: %s\n' "$BACKEND"
+      printf 'dispatcher backend: %s' "$BACKEND"
+      if [[ -f "$PID_FILE" ]]; then
+        printf ' (pid: %s)' "$(cat "$PID_FILE")"
+      fi
+      printf '\n'
       ;;
   esac
 }
