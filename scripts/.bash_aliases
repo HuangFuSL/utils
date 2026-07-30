@@ -304,6 +304,22 @@ pginfo() {
   local pids=() p
   while IFS='|' read -r _ _ p _ _ _; do pids+=("$p"); done < "$tree_data"
 
+  # ── CPU sampling: two-pass delta from /proc/pid/stat (like pstats) ──
+  local clk_tck
+  clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100)
+  local -A tick_snap1 cpu_pcts
+  local _p _u _s _prev
+  for _p in "${pids[@]}"; do
+    read -r _u _s < <(awk '{print $14, $15}' /proc/"$_p"/stat 2>/dev/null) 2>/dev/null || continue
+    tick_snap1[$_p]=$((_u + _s))
+  done
+  sleep 1
+  for _p in "${pids[@]}"; do
+    read -r _u _s < <(awk '{print $14, $15}' /proc/"$_p"/stat 2>/dev/null) 2>/dev/null || continue
+    _prev=${tick_snap1[$_p]:-0}
+    cpu_pcts[$_p]=$(awk -v d="$((_u + _s - _prev))" -v c="$clk_tck" 'BEGIN { printf "%.1f", d / c * 100 }')
+  done
+
   # header
   printf "%-${tw}s %-8s %-8s %-12s %6s %6s %9s %9s %10s %s\n" \
     TREE PID PPID USER CPU% MEM% RSS VSZ TIME COMMAND
@@ -320,6 +336,8 @@ pginfo() {
     if [[ -z "$line" ]]; then
       echo "$depth ${bars:--} $has_children $is_target $pid $ppid _DEAD_ 0 0 0 0 00:00:00 <exited>"
     else
+      local sampled_cpu="${cpu_pcts[$pid]:-0}"
+      line=$(echo "$line" | awk -v cpu="$sampled_cpu" '{$4=sprintf("%.1f", cpu); print}')
       echo "$depth ${bars:--} $has_children $is_target $line"
     fi
   done < "$tree_data" | awk -v tw="$tw" -v tw_term="$tw_term" "$AWK_COLORS"$'\n''
@@ -332,11 +350,11 @@ pginfo() {
       else                           s = s "  "
     }
     if (depth == 0) {
-      s = s "▼"
+      s = s "●"
       dw = 1
     } else {
       conn = (substr(bars, depth, 1) == "1") ? "├─" : "└─"
-      s = s conn (has_children ? "▼" : "─")
+      s = s conn (has_children ? "●" : "─")
       dw = depth * 2 + 1
     }
     while (dw < tw) { s = s "─"; dw++ }
@@ -346,7 +364,7 @@ pginfo() {
   function cont_tree_col(tc) {
     gsub(/├/, "│", tc)
     gsub(/└/, " ", tc)
-    gsub(/▼/, "│", tc)
+    gsub(/●/, "│", tc)
     gsub(/─/, " ", tc)
     return tc
   }
