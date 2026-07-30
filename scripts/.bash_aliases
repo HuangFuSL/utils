@@ -8,6 +8,33 @@ if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   alias catlsa="python3 $_BASH_ALIASES_DIR/catlsa.py"
 fi
 
+# ── join: wait for PIDs to exit ─────────────────────────────────────────
+join() {
+  local pids=("$@")
+  ((${#pids[@]})) || { echo "Usage: join <pid> [pid...]" >&2; return 1; }
+  local remain=("${pids[@]}")
+  local total=${#pids[@]}
+  local done=()
+
+  while ((${#remain[@]})); do
+    local new_remain=()
+    for pid in "${remain[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        new_remain+=("$pid")
+      else
+        done+=("$pid")
+      fi
+    done
+    remain=("${new_remain[@]}")
+    if ((${#done[@]})); then
+      printf '[join] %s exited\n' "${done[*]}"
+      done=()
+    fi
+    ((${#remain[@]})) && sleep 1
+  done
+  echo "[join] all $total process(es) exited"
+}
+
 # Only load on Linux — /proc, GNU ps flags, etc.
 if [[ "$(uname)" != "Linux" ]]; then
   echo ".bash_aliases: skipping (Linux only, running on $(uname))" >&2

@@ -21,6 +21,7 @@ Linux-only shell aliases and functions for process inspection.
 # Script aliases (all platforms)
 catlsa               # → catlsa.py
 gather               # → gather.sh
+join <pid> [pid...]  # wait for processes to exit
 run_nb               # → run_nb.py
 taskq                # → taskq.sh
 vima                 # → vima.sh
