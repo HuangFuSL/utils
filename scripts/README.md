@@ -14,9 +14,16 @@ Miscellaneous utility scripts.
 
 ### .bash_aliases
 
-Linux-only shell aliases and functions for process inspection. Sources safely on non-Linux (skips with a message).
+Linux-only shell aliases and functions for process inspection.
 
 ```bash
+# Script aliases (all platforms)
+gather               # → gather.sh
+run_nb               # → run_nb.py
+taskq                # → taskq.sh
+vima                 # → vima.sh
+
+# Process inspection (Linux only)
 showmem              # RSS summary by user
 memtop [user]        # top-20 processes by RSS for a user (default: huangfusl)
 

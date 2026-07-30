@@ -1,3 +1,12 @@
+# ── Script aliases (all platforms) ─────────────────────────────────────
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  _BASH_ALIASES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  alias gather="$_BASH_ALIASES_DIR/gather.sh"
+  alias run_nb="python3 $_BASH_ALIASES_DIR/run_nb.py"
+  alias taskq="$_BASH_ALIASES_DIR/taskq.sh"
+  alias vima="$_BASH_ALIASES_DIR/vima.sh"
+fi
+
 # Only load on Linux — /proc, GNU ps flags, etc.
 if [[ "$(uname)" != "Linux" ]]; then
   echo ".bash_aliases: skipping (Linux only, running on $(uname))" >&2
