@@ -57,6 +57,27 @@ gather.sh --max-concurrent 4 --fail-fast "cmd1" "cmd2" "cmd3"
 gather.sh --show-log 3 run.log           # inspect output of instance 3
 ```
 
+#### Reading Logs
+
+Each command's output is tagged with an instance number. Filter with `grep`:
+
+```bash
+# task output for instance N (no metadata lines)
+grep '^\[Instance #N\]\($\|[^#]\)' log
+
+# metadata for instance N
+grep '^\[Instance #N\]#' log
+
+# all command lines
+grep '^\[Instance #[0-9]\+\]# cmdline:' log
+
+# failed tasks
+grep '^\[Instance #[0-9]\+\]# exit_code:' log | grep -v ': 0$'
+
+# finish timestamps
+grep '^\[Instance #[0-9]\+\]# finished:' log
+```
+
 ### run_nb.py
 
 Execute multiple instances of a Jupyter notebook in parallel with configurable concurrency and start-interval control. Requires `nbformat` and `nbclient`.
@@ -73,6 +94,8 @@ run_nb.py -f notebook.ipynb -t 5 -w 2 --ignore-errors
 ```
 
 Each instance gets a copy of the template (e.g. `notebook_1.ipynb`, `notebook_2.ipynb`, …) and runs in its own kernel with `AUTOMATED=1` set in the environment.
+
+**Note**: The script creates a temporary `.{notebook_name}_run_nb.lock` file to prevent concurrent runs on the same notebook. If a previous run exits abnormally, delete the lock file before running again.
 
 ### taskq.sh
 
