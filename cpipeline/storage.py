@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS scripts (
 
 CREATE TABLE IF NOT EXISTS run_inputs (
     script_id   TEXT    REFERENCES scripts(script_id) ON DELETE CASCADE,
-    upstream_id TEXT    REFERENCES scripts(script_id) ON DELETE CASCADE,
+    upstream_id TEXT,  -- '' = no upstream (source scripts)
     path        TEXT    NOT NULL,
     hash        TEXT    NOT NULL,
     UNIQUE(script_id, upstream_id, path)
@@ -81,7 +81,7 @@ class RunDB():
 
             UNION ALL
 
-            SELECT ?, NULL, ?, ?
+            SELECT ?, '', ?, ?
             WHERE NOT EXISTS (
                 SELECT 1 FROM run_outputs WHERE path = ? AND hash = ?
             )
@@ -109,7 +109,7 @@ class RunDB():
             [dict(r) for r in self.conn.execute(
                 'SELECT * FROM run_inputs WHERE script_id = ?', (script_id,)
             ).fetchall()],
-            key=lambda r: r['upstream_id'] if r['upstream_id'] is not None else '',
+            key=lambda r: r['upstream_id'],
         )
         ret_grouped = itertools.groupby(ret, key=lambda r: r['upstream_id'])
         return {
