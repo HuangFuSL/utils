@@ -113,7 +113,7 @@ class DNN(Module):
         dropout (float | None): Dropout rate to apply after each layer. If None, no dropout is applied.
         activation (str | Activation | None): Activation function to apply after each layer.
         residual (bool): Whether to add a residual connection from input to output, requiring input and output dimensions to match.
-        bare_last_layer (bool): Whether to remove activation and dropout after the output of the last layer, defaults to False.
+        bare_last_layer (bool): Whether to remove batchnorm, activation and dropout after the output of the last layer, defaults to False.
 
     Shapes:
 
@@ -160,9 +160,9 @@ class DNN(Module):
         for i, (in_dim, out_dim) in enumerate(zip(in_dims, out_dims)):
             current_layer = []
             current_layer.append(layer_type(in_dim, out_dim, bias))
-            if batchnorm:
-                current_layer.append(batchnorm_class(out_dim))
             if not bare_last_layer or i < num_layers - 1:
+                if batchnorm:
+                    current_layer.append(batchnorm_class(out_dim))
                 if isinstance(activation, str):
                     current_layer.append(Activation(activation))
                 elif isinstance(activation, Activation):
