@@ -260,14 +260,16 @@ def auto_cli(cls: Type[T] | None = None, /) -> Type[T] | Callable[[Type[T]], Typ
             parser = argparse.ArgumentParser(add_help=False)
 
             for f in dataclasses.fields(cls_):
+                cli_name = f.name.replace('_', '-')
                 if prefix:
+                    cli_prefix = prefix.replace('_', '-')
                     name = f'{prefix}_{f.name}'
-                    argname = f'--{prefix}-{f.name}'
-                    no_argname = f'--no-{prefix}-{f.name}'
+                    argname = f'--{cli_prefix}-{cli_name}'
+                    no_argname = f'--no-{cli_prefix}-{cli_name}'
                 else:
                     name = f.name
-                    argname = f'--{f.name}'
-                    no_argname = f'--no-{f.name}'
+                    argname = f'--{cli_name}'
+                    no_argname = f'--no-{cli_name}'
                 argtype = _infer_argtype(_type_hints[f.name])
                 if f.default is not dataclasses.MISSING:
                     default = f.default
