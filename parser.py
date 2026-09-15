@@ -19,8 +19,9 @@ import functools
 import json
 import os
 import sys
+import types
 import typing
-from typing import Any, Callable, Dict, Iterable, Literal, Optional, Sequence, Type, TypeVar, Union, overload
+from typing import Any, Callable, Dict, Iterable, Literal, Sequence, Type, TypeVar, Union, overload
 
 try:
     from typing import dataclass_transform
@@ -51,14 +52,16 @@ def _is_container(tp: Any) -> bool:
     origin = typing.get_origin(tp)
     return origin in (list, set, tuple) or tp in (list, set, tuple)
 
+# types.UnionType (PEP 604 ``X | Y``) only exists on 3.10+; get_origin returns it on 3.10–3.13.
+_UNION_TYPE = getattr(types, 'UnionType', None)
+
 def _strip_optional(tp: Any) -> Any:
     '''Union[..., None] ➜ ...'''
-    if typing.get_origin(tp) is Union:
+    origin = typing.get_origin(tp)
+    if origin is Union or (_UNION_TYPE is not None and origin is _UNION_TYPE):
         non_none = [t for t in typing.get_args(tp) if t is not type(None)]
         if len(non_none) == 1:
             return non_none[0]
-    if typing.get_origin(tp) is Optional:
-        return _strip_optional(typing.get_args(tp)[0])
     return tp
 
 

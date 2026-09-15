@@ -144,6 +144,26 @@ class TestParser(unittest.TestCase):
         self.assertIsNone(obj.name)
         self.assertIsNone(obj.age)
 
+    @unittest.skipUnless(sys.version_info >= (3, 10), 'PEP 604 (`X | Y`) requires Python 3.10+')
+    def test_pep604_optional(self):
+        @auto_cli
+        @dataclasses.dataclass
+        class Args:
+            lr: float | None = None
+            steps: int | None = None
+
+        ns = Args.get_parser().parse_args(['--lr', '0.5', '--steps', '100'])
+        obj = Args.parse_namespace(ns)
+        self.assertIsInstance(obj.lr, float)
+        self.assertEqual(obj.lr, 0.5)
+        self.assertIsInstance(obj.steps, int)
+        self.assertEqual(obj.steps, 100)
+
+        ns = Args.get_parser().parse_args([])
+        obj = Args.parse_namespace(ns)
+        self.assertIsNone(obj.lr)
+        self.assertIsNone(obj.steps)
+
     def test_mixed_types(self):
         @auto_cli
         @dataclasses.dataclass
